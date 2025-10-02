@@ -1,2 +1,4 @@
 trip_id,date,start_time,end_time,duration_min,distance_miles,start_lat,start_lng,end_lat,end_lng,label,notes,is_business,start_address,end_address
-T202510-001,2025-10-01,08:42,09:23,41,16.80,40.7608,-111.891,40.7,-111.94,Business,,1,,
+T202510-001,2025-10-01,09:00,09:47,47,18.93,40.7608,-111.891,40.7,-111.94,Business,,1,,
+T202510-002,2025-10-01,08:22,09:21,59,24.22,40.7608,-111.891,40.7,-111.94,Business,,1,,
+T202510-003,2025-10-02,09:42,10:50,68,27.77,40.7608,-111.891,40.7,-111.94,Business,,1,,
