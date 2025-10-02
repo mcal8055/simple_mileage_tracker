@@ -1,0 +1,39 @@
+name: CI (schema & csv lint)
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r Scripts/requirements.txt
+
+      - name: Validate export schema
+        run: python Scripts/validate_export_schema.py
+
+      - name: Lint generated CSVs (if any)
+        run: |
+          shopt -s nullglob
+          for f in Resources/Generated/*.csv; do
+            echo "Linting $f"
+            python Scripts/lint_trip_csv.py "$f"
+          done
