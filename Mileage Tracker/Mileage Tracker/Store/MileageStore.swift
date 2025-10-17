@@ -8,6 +8,9 @@
 import Foundation
 import Combine
 import CoreLocation
+#if canImport(UIKit)
+import UIKit
+#endif
 
 @MainActor
 final class MileageStore: ObservableObject {
@@ -22,8 +25,25 @@ final class MileageStore: ObservableObject {
 
     private let tripsFileName = "trips.json"
     private let inProgressFileName = "trip_in_progress.json"
+    private let pointsDirectoryName = "points"
 
-    init() {
+    // Injected base directory for persistence (defaults to app Documents).
+    private let baseDirectoryURL: URL
+
+    // Foreground-only breadcrumb recorder
+    private let recorder = LocationRecordingController()
+
+    // MARK: - Init
+
+    // Designated initializer with injectable base directory for tests.
+    init(baseDirectoryURL: URL? = nil) {
+        if let baseDirectoryURL {
+            self.baseDirectoryURL = baseDirectoryURL
+        } else {
+            // Default to Documents for app usage.
+            self.baseDirectoryURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        }
+
         Task {
             await loadTrips()
             await loadInProgress()
@@ -44,9 +64,23 @@ final class MileageStore: ObservableObject {
             startLat: startLat,
             startLon: startLon,
             endLat: nil,
-            endLon: nil
+            endLon: nil,
+            routeMiles: nil,
+            recordedMiles: nil,
+            pointsFileName: nil,
+            pointsCount: nil
         )
         currentTripInProgress = t
+
+        // Ensure directories and start recorder (foreground-only)
+        do {
+            try ensureBaseDirectoryExists()
+            try ensurePointsDirectoryExists()
+            try recorder.start(for: t.id, baseDirectory: baseDirectoryURL)
+            setIdleTimerDisabled(true)
+        } catch {
+            print("Failed to start recording: \(error)")
+        }
     }
 
     func finalizeCurrentTrip(endOdo: Double, endLat: Double?, endLon: Double?) {
@@ -54,6 +88,14 @@ final class MileageStore: ObservableObject {
         t.endOdo = endOdo
         t.endLat = endLat
         t.endLon = endLon
+        t.endDate = Date() // capture end timestamp
+
+        // Stop recorder and attach summary
+        let summary = recorder.stop(cancel: false)
+        setIdleTimerDisabled(false)
+        t.recordedMiles = summary.recordedMiles > 0 ? summary.recordedMiles : nil
+        t.pointsFileName = summary.fileName
+        t.pointsCount = summary.pointsCount > 0 ? summary.pointsCount : nil
 
         // Save immediately
         trips.append(t)
@@ -83,7 +125,20 @@ final class MileageStore: ObservableObject {
     }
 
     func cancelCurrentTrip() {
+        // Stop recorder and delete partial file
+        _ = recorder.stop(cancel: true)
+        setIdleTimerDisabled(false)
         currentTripInProgress = nil
+    }
+
+    // MARK: - Live in-progress stats
+
+    func liveRecordedMiles() -> Double {
+        recorder.currentRecordedMiles
+    }
+
+    func livePointsCount() -> Int {
+        recorder.currentPointsCount
     }
 
     // MARK: - CRUD (legacy edit path still supported)
@@ -119,16 +174,22 @@ final class MileageStore: ObservableObject {
 
     // MARK: - Persistence
 
-    private var documentsURL: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-    }
-
     private var tripsURL: URL {
-        documentsURL.appendingPathComponent(tripsFileName)
+        baseDirectoryURL.appendingPathComponent(tripsFileName)
     }
 
     private var inProgressURL: URL {
-        documentsURL.appendingPathComponent(inProgressFileName)
+        baseDirectoryURL.appendingPathComponent(inProgressFileName)
+    }
+
+    private var pointsDirectoryURL: URL {
+        baseDirectoryURL.appendingPathComponent(pointsDirectoryName, isDirectory: true)
+    }
+
+    // Build a full URL to a points file name under the points directory.
+    func pointsFileURL(fileName: String?) -> URL? {
+        guard let name = fileName, !name.isEmpty else { return nil }
+        return pointsDirectoryURL.appendingPathComponent(name)
     }
 
     private func encoder() -> JSONEncoder {
@@ -157,6 +218,7 @@ final class MileageStore: ObservableObject {
     func saveTrips() async {
         do {
             let data = try encoder().encode(trips)
+            try ensureBaseDirectoryExists()
             try data.write(to: tripsURL, options: [.atomic])
         } catch {
             print("Failed to save trips: \(error)")
@@ -176,6 +238,7 @@ final class MileageStore: ObservableObject {
 
     func saveInProgress() async {
         do {
+            try ensureBaseDirectoryExists()
             if let t = currentTripInProgress {
                 let data = try encoder().encode(t)
                 try data.write(to: inProgressURL, options: [.atomic])
@@ -189,4 +252,24 @@ final class MileageStore: ObservableObject {
             print("Failed to save in-progress trip: \(error)")
         }
     }
+
+    private func ensureBaseDirectoryExists() throws {
+        try FileManager.default.createDirectory(at: baseDirectoryURL, withIntermediateDirectories: true)
+    }
+
+    private func ensurePointsDirectoryExists() throws {
+        try FileManager.default.createDirectory(at: pointsDirectoryURL, withIntermediateDirectories: true)
+    }
+
+    // MARK: - Idle timer control (iOS/iPadOS only)
+
+    private func setIdleTimerDisabled(_ disabled: Bool) {
+        #if os(iOS) || os(tvOS)
+        UIApplication.shared.isIdleTimerDisabled = disabled
+        #else
+        // No-op on platforms without UIKit
+        _ = disabled
+        #endif
+    }
 }
+

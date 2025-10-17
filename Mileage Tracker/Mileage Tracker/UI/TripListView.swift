@@ -21,6 +21,12 @@ struct TripListView: View {
     @State private var showingEndSheet = false
     @State private var endOdoText: String = ""
 
+    // Live in-progress stats
+    @State private var liveMiles: Double = 0
+    @State private var livePoints: Int = 0
+    @State private var isPollingStats: Bool = false
+    @State private var statsTimer: Timer?
+
     var body: some View {
         NavigationStack {
             List {
@@ -40,6 +46,16 @@ struct TripListView: View {
                                     .font(.footnote)
                                     .foregroundStyle(.secondary)
                             }
+
+                            // Live recorded stats line
+                            HStack {
+                                Text("Recorded:")
+                                Spacer()
+                                Text("\(milesString(liveMiles)) (\(livePoints) pts)")
+                                    .monospacedDigit()
+                                    .foregroundStyle(.primary)
+                            }
+                            .font(.footnote)
 
                             HStack(alignment: .center, spacing: 12) {
                                 Button {
@@ -72,6 +88,8 @@ struct TripListView: View {
                             statusView
                         }
                         .padding(.vertical, 4)
+                        .onAppear { startPollingStats() }
+                        .onDisappear { stopPollingStats() }
                     }
                 } else {
                     // Start trip control when no trip is in progress
@@ -85,6 +103,10 @@ struct TripListView: View {
                                         let lat = loc?.coordinate.latitude
                                         let lon = loc?.coordinate.longitude
                                         store.startTrip(at: Date(), startLat: lat, startLon: lon)
+                                        // Reset live stats when starting
+                                        liveMiles = 0
+                                        livePoints = 0
+                                        startPollingStats()
                                     }
                                 } label: {
                                     Label("Start Trip", systemImage: "play.circle.fill")
@@ -97,6 +119,7 @@ struct TripListView: View {
                             statusView
                         }
                         .padding(.vertical, 4)
+                        .onAppear { stopPollingStats() } // no in-progress trip
                     }
                 }
 
@@ -104,8 +127,8 @@ struct TripListView: View {
                 Section("Trips") {
                     ForEach(store.trips) { trip in
                         Button {
+                            // Present edit for this specific trip
                             editTrip = trip
-                            showingEdit = true
                         } label: {
                             HStack {
                                 VStack(alignment: .leading) {
@@ -117,7 +140,7 @@ struct TripListView: View {
                                     }
                                 }
                                 Spacer()
-                                // Prefer automated miles via exportMiles (route > odometer)
+                                // Prefer automated miles via exportMiles (recorded > route > odometer)
                                 Text(milesString(trip.exportMiles))
                                     .monospacedDigit()
                                     .foregroundStyle(.primary)
@@ -137,8 +160,10 @@ struct TripListView: View {
                         Label("Export", systemImage: "square.and.arrow.up")
                     }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    EditButton() // Enables bulk delete via edit mode
                     Button {
+                        // Present new trip editor
                         editTrip = nil
                         showingEdit = true
                     } label: {
@@ -147,15 +172,80 @@ struct TripListView: View {
                     .accessibilityLabel("Add Trip")
                 }
             }
-            .sheet(isPresented: $showingEdit) {
-                EditTripView(trip: editTrip)
+            // Sheet for editing existing trips (bound to selected Trip)
+            .sheet(item: $editTrip) { trip in
+                EditTripView(trip: trip)
             }
+            // Sheet for adding a new trip
+            .sheet(isPresented: $showingEdit) {
+                EditTripView(trip: nil)
+            }
+            // Share sheets
             .sheet(item: $shareItem) { item in
                 ShareSheet(activityItems: [item.url])
             }
+            // Finalize sheet
             .sheet(isPresented: $showingEndSheet) {
                 endTripSheet
                     .presentationDetents([.height(220)])
+            }
+            .onChange(of: store.currentTripInProgress != nil) { _, active in
+                // Start/stop polling based on trip state
+                if active {
+                    startPollingStats()
+                } else {
+                    stopPollingStats()
+                }
+            }
+        }
+    }
+
+    // MARK: - Polling live stats
+
+    @MainActor
+    private func startPollingStats() {
+        guard !isPollingStats else { return }
+        isPollingStats = true
+
+        // Ensure previous timer is cleared
+        statsTimer?.invalidate()
+        statsTimer = nil
+
+        // Use selector-based timer with a proxy that executes a closure on fire.
+        let proxy = TimerProxy { [weak store] in
+            // If trip ended, stop polling
+            if store?.currentTripInProgress == nil {
+                stopPollingStats()
+                return
+            }
+            liveMiles = store?.liveRecordedMiles() ?? 0
+            livePoints = store?.livePointsCount() ?? 0
+        }
+
+        let timer = Timer.scheduledTimer(timeInterval: 1.0, target: proxy, selector: #selector(TimerProxy.fire), userInfo: nil, repeats: true)
+        // Retain the proxy via the timer; no additional strong refs needed.
+        RunLoop.main.add(timer, forMode: .common)
+        statsTimer = timer
+    }
+
+    @MainActor
+    private func stopPollingStats() {
+        statsTimer?.invalidate()
+        statsTimer = nil
+        isPollingStats = false
+    }
+
+    // Helper proxy object so the Timer calls back into a closure on main actor.
+    private final class TimerProxy: NSObject {
+        private let onFire: @MainActor () -> Void
+
+        init(onFire: @escaping @MainActor () -> Void) {
+            self.onFire = onFire
+        }
+
+        @objc func fire() {
+            Task { @MainActor in
+                onFire()
             }
         }
     }
@@ -202,7 +292,7 @@ struct TripListView: View {
                 Section("End Odometer (Optional)") {
                     TextField("End odometer", text: $endOdoText)
                         .keyboardType(.decimalPad)
-                    Text("You can leave this blank; distance will be computed from your route.")
+                    Text("You can leave this blank; distance will be computed from your recorded route.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -344,3 +434,4 @@ private struct ShareSheet: UIViewControllerRepresentable {
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) { }
 }
+

@@ -11,6 +11,7 @@ import CoreLocation
 struct Trip: Identifiable, Codable, Hashable {
     var id: UUID = UUID()
     var date: Date
+    var endDate: Date? = nil
     var startOdo: Double
     var endOdo: Double
     var purpose: String
@@ -26,6 +27,17 @@ struct Trip: Identifiable, Codable, Hashable {
 
     // Persisted route distance (miles) computed via MapKit Directions
     var routeMiles: Double?
+
+    // Recorded breadcrumb distance (miles) computed from sampled TripPoints
+    // Preferred for audit/export when available.
+    var recordedMiles: Double?
+
+    // Link to per-trip breadcrumb file under baseDirectory/points/
+    // Example: "trip_<UUID>.jsonl"
+    var pointsFileName: String?
+
+    // Optional quick summary of how many points were recorded
+    var pointsCount: Int?
 
     // Odometer-based miles (kept for compatibility if you ever enter odos)
     var miles: Double {
@@ -44,10 +56,12 @@ struct Trip: Identifiable, Codable, Hashable {
     }
 
     // Preferred export/display miles:
-    // 1) routeMiles (Directions), 2) odometer miles
-    // Note: Haversine is intentionally not used.
+    // 1) recordedMiles (from breadcrumbs)
+    // 2) routeMiles (Directions)
+    // 3) odometer miles
     var exportMiles: Double {
-        if let r = routeMiles { return max(0, r) }
+        if let r = recordedMiles, r > 0 { return r }
+        if let r = routeMiles, r > 0 { return r }
         return miles
     }
 }
@@ -62,3 +76,4 @@ extension Trip {
         notes: "Downtown"
     )
 }
+

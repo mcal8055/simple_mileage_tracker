@@ -7,220 +7,161 @@
 
 import SwiftUI
 import CoreLocation
+import MapKit
+import Combine
 
-struct EditTripView: View {
-    @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject private var store: MileageStore
+@MainActor
+final class EditTripViewModel: ObservableObject {
+    // Core fields
+    @Published var id: UUID = UUID()
+    @Published var date: Date = Date()
+    @Published var endDate: Date? = nil
+    @Published var startOdoText: String = ""
+    @Published var endOdoText: String = ""
+    @Published var purpose: String = ""
+    @Published var category: String = ""
+    @Published var notes: String = ""
+    @Published var createdAt: Date = Date()
 
-    // Location manager for one-shot captures
-    @StateObject private var locationManager = LocationManager()
+    // Coordinates
+    @Published var startLat: Double?
+    @Published var startLon: Double?
+    @Published var endLat: Double?
+    @Published var endLon: Double?
 
-    @State private var id: UUID = UUID()
-    @State private var date: Date = Date()
-    @State private var startOdo: String = ""
-    @State private var endOdo: String = ""
-    @State private var purpose: String = ""
-    @State private var category: String = ""
-    @State private var notes: String = ""
-    @State private var createdAt: Date = Date()
+    // Persisted context we keep (not shown here, but preserved on save)
+    @Published var recordedMiles: Double?
+    @Published var routeMiles: Double?
+    @Published var pointsCount: Int?
+    @Published var pointsFileName: String?
 
-    // Local coordinate fields
-    @State private var startLat: Double?
-    @State private var startLon: Double?
-    @State private var endLat: Double?
-    @State private var endLon: Double?
+    // Points for map preview
+    @Published var pointsCoords: [CLLocationCoordinate2D] = []
 
-    let trip: Trip?
+    private let pointsReader = TripPointsReader()
 
     init(trip: Trip?) {
-        self.trip = trip
-    }
+        if let t = trip {
+            id = t.id
+            date = t.date
+            endDate = t.endDate
+            startOdoText = numberString(t.startOdo)
+            endOdoText = numberString(t.endOdo)
+            purpose = t.purpose
+            category = t.category
+            notes = t.notes
+            createdAt = t.createdAt
+            startLat = t.startLat
+            startLon = t.startLon
+            endLat = t.endLat
+            endLon = t.endLon
 
-    var body: some View {
-        NavigationStack {
-            Form {
-                DatePicker("Date", selection: $date, displayedComponents: [.date, .hourAndMinute])
+            recordedMiles = t.recordedMiles
+            routeMiles = t.routeMiles
+            pointsCount = t.pointsCount
+            pointsFileName = t.pointsFileName
+        } else {
+            // Defaults for a new trip
+            id = UUID()
+            date = Date()
+            endDate = nil
+            startOdoText = ""
+            endOdoText = ""
+            purpose = ""
+            category = ""
+            notes = ""
+            createdAt = Date()
+            startLat = nil
+            startLon = nil
+            endLat = nil
+            endLon = nil
 
-                // Optional odometer section for auditing
-                Section("Odometer (Optional)") {
-                    TextField("Start", text: $startOdo)
-                        .keyboardType(.decimalPad)
-                    TextField("End", text: $endOdo)
-                        .keyboardType(.decimalPad)
-                    HStack {
-                        Text("Entered Miles")
-                        Spacer()
-                        Text(enteredMilesString)
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                // Computed miles (read-only): route or odometer only (no haversine preview).
-                Section("Distance") {
-                    HStack {
-                        Text("Computed")
-                        Spacer()
-                        Text(distanceDisplay)
-                            .monospacedDigit()
-                            .foregroundStyle(.primary)
-                    }
-                    Text("Miles will use MapKit route when available; otherwise odometer if entered.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("Details") {
-                    TextField("Purpose", text: $purpose)
-                    TextField("Category", text: $category)
-                    TextField("Notes", text: $notes, axis: .vertical)
-                        .lineLimit(1...4)
-                }
-
-                Section("Location (optional)") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Button {
-                            Task {
-                                locationManager.requestWhenInUseAuthorization()
-                                if let loc = await locationManager.captureOneShotLocation() {
-                                    startLat = loc.coordinate.latitude
-                                    startLon = loc.coordinate.longitude
-                                }
-                            }
-                        } label: {
-                            Label("Set Start Location", systemImage: "mappin.and.ellipse")
-                        }
-                        .buttonStyle(.bordered)
-
-                        if let slat = startLat, let slon = startLon {
-                            Text("Start: \(formatCoord(slat)), \(formatCoord(slon))")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-
-                        Button {
-                            Task {
-                                locationManager.requestWhenInUseAuthorization()
-                                if let loc = await locationManager.captureOneShotLocation() {
-                                    endLat = loc.coordinate.latitude
-                                    endLon = loc.coordinate.longitude
-                                }
-                            }
-                        } label: {
-                            Label("Set End Location", systemImage: "mappin.circle")
-                        }
-                        .buttonStyle(.bordered)
-
-                        if let elat = endLat, let elon = endLon {
-                            Text("End: \(formatCoord(elat)), \(formatCoord(elon))")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-
-                        // Lightweight status
-                        switch locationManager.status {
-                        case .idle:
-                            EmptyView()
-                        case .requesting:
-                            HStack(spacing: 6) {
-                                ProgressView()
-                                Text("Getting location…")
-                            }
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                        case .authorized:
-                            Text("Location allowed")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        case .denied:
-                            Text("Location denied. Enable in Settings > Privacy > Location Services.")
-                                .font(.footnote)
-                                .foregroundStyle(.red)
-                        case .failed(let msg):
-                            Text("Location failed: \(msg)")
-                                .font(.footnote)
-                                .foregroundStyle(.red)
-                        case .gotFix(let loc):
-                            Text("Got location: \(formatCoord(loc.coordinate.latitude)), \(formatCoord(loc.coordinate.longitude))")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
-            .navigationTitle(trip == nil ? "New Trip" : "Edit Trip")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { save() }
-                        .disabled(!canSave)
-                }
-            }
-            .onAppear {
-                if let t = trip {
-                    id = t.id
-                    date = t.date
-                    startOdo = numberString(t.startOdo)
-                    endOdo = numberString(t.endOdo)
-                    purpose = t.purpose
-                    category = t.category
-                    notes = t.notes
-                    createdAt = t.createdAt
-                    startLat = t.startLat
-                    startLon = t.startLon
-                    endLat = t.endLat
-                    endLon = t.endLon
-                } else {
-                    id = UUID()
-                    date = Date()
-                    startOdo = ""
-                    endOdo = ""
-                    purpose = ""
-                    category = ""
-                    notes = ""
-                    createdAt = Date()
-                    startLat = nil
-                    startLon = nil
-                    endLat = nil
-                    endLon = nil
-                }
-            }
+            recordedMiles = nil
+            routeMiles = nil
+            pointsCount = nil
+            pointsFileName = nil
         }
     }
 
-    // Always allow save (odometer optional)
-    private var canSave: Bool { true }
+    // MARK: - Derived values
 
-    private var enteredMilesString: String {
-        guard let s = Double(startOdo), let e = Double(endOdo) else { return "—" }
+    var startOdo: Double { Double(startOdoText) ?? 0 }
+    var endOdo: Double { Double(endOdoText) ?? 0 }
+
+    var enteredMilesString: String {
+        guard let s = Double(startOdoText), let e = Double(endOdoText) else { return "—" }
         return String(format: "%.1f", max(0, e - s))
     }
 
-    // Display logic: prefer route (if editing existing trip that already has it), else odometer, else pending/placeholder.
-    private var distanceDisplay: String {
-        if let t = trip, let r = t.routeMiles, r > 0 {
-            return String(format: "%.1f mi", r)
-        }
-        if let s = Double(startOdo), let e = Double(endOdo), e >= s {
-            return String(format: "%.1f mi (odometer)", e - s)
-        }
-        // If both coords are set but no route yet, hint that it will compute after save.
-        if startLat != nil, startLon != nil, endLat != nil, endLon != nil {
-            return "Pending route…"
-        }
-        return "—"
+    var startCoordinate: CLLocationCoordinate2D? {
+        guard let lat = startLat, let lon = startLon else { return nil }
+        return CLLocationCoordinate2D(latitude: lat, longitude: lon)
     }
 
-    private func save() {
-        let s = Double(startOdo) ?? 0
-        let e = Double(endOdo) ?? 0
-        let newTrip = Trip(
+    var endCoordinate: CLLocationCoordinate2D? {
+        guard let lat = endLat, let lon = endLon else { return nil }
+        return CLLocationCoordinate2D(latitude: lat, longitude: lon)
+    }
+
+    func computedRegion() -> MKCoordinateRegion? {
+        if pointsCoords.count >= 2 {
+            var minLat = 90.0, maxLat = -90.0, minLon = 180.0, maxLon = -180.0
+            for c in pointsCoords {
+                minLat = min(minLat, c.latitude)
+                maxLat = max(maxLat, c.latitude)
+                minLon = min(minLon, c.longitude)
+                maxLon = max(maxLon, c.longitude)
+            }
+            let center = CLLocationCoordinate2D(latitude: (minLat + maxLat)/2, longitude: (minLon + maxLon)/2)
+            let span = MKCoordinateSpan(latitudeDelta: max(0.01, (maxLat - minLat) * 1.2),
+                                        longitudeDelta: max(0.01, (maxLon - minLon) * 1.2))
+            return MKCoordinateRegion(center: center, span: span)
+        }
+        return fallbackRegionFromEndpoints()
+    }
+
+    private func fallbackRegionFromEndpoints() -> MKCoordinateRegion? {
+        switch (startCoordinate, endCoordinate) {
+        case let (s?, e?):
+            let minLat = min(s.latitude, e.latitude)
+            let maxLat = max(s.latitude, e.latitude)
+            let minLon = min(s.longitude, e.longitude)
+            let maxLon = max(s.longitude, e.longitude)
+            let center = CLLocationCoordinate2D(latitude: (minLat + maxLat)/2, longitude: (minLon + maxLon)/2)
+            let span = MKCoordinateSpan(latitudeDelta: max(0.01, (maxLat - minLat) * 1.2),
+                                        longitudeDelta: max(0.01, (maxLon - minLon) * 1.2))
+            return MKCoordinateRegion(center: center, span: span)
+        case let (s?, nil):
+            return MKCoordinateRegion(center: s, span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02))
+        case let (nil, e?):
+            return MKCoordinateRegion(center: e, span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02))
+        default:
+            return nil
+        }
+    }
+
+    // MARK: - IO
+
+    func pointsURL(using store: MileageStore) -> URL? {
+        store.pointsFileURL(fileName: pointsFileName)
+    }
+
+    func loadPointsIfAvailable(using store: MileageStore) async {
+        guard let url = pointsURL(using: store) else {
+            pointsCoords = []
+            return
+        }
+        let coords = (try? await pointsReader.loadPoints(from: url)) ?? []
+        pointsCoords = coords
+    }
+
+    func makeTrip() -> Trip {
+        Trip(
             id: id,
             date: date,
-            startOdo: s,
-            endOdo: e,
+            endDate: endDate,
+            startOdo: startOdo,
+            endOdo: endOdo,
             purpose: purpose.trimmingCharacters(in: .whitespacesAndNewlines),
             category: category.trimmingCharacters(in: .whitespacesAndNewlines),
             notes: notes.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -228,16 +169,15 @@ struct EditTripView: View {
             startLat: startLat,
             startLon: startLon,
             endLat: endLat,
-            endLon: endLon
+            endLon: endLon,
+            routeMiles: routeMiles,
+            recordedMiles: recordedMiles,
+            pointsFileName: pointsFileName,
+            pointsCount: pointsCount
         )
-
-        if trip == nil {
-            store.add(newTrip)
-        } else {
-            store.update(newTrip)
-        }
-        dismiss()
     }
+
+    // MARK: - Helpers
 
     private func numberString(_ d: Double) -> String {
         if d.rounded(.towardZero) == d {
@@ -247,7 +187,323 @@ struct EditTripView: View {
         }
     }
 
-    private func formatCoord(_ v: Double) -> String {
+    func formatCoord(_ v: Double) -> String {
         String(format: "%.5f", v)
+    }
+}
+
+struct EditTripView: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: MileageStore
+
+    @StateObject private var locationManager = LocationManager()
+    @StateObject private var vm: EditTripViewModel
+
+    private let isNew: Bool
+
+    init(trip: Trip?) {
+        _vm = StateObject(wrappedValue: EditTripViewModel(trip: trip))
+        self.isNew = (trip == nil)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    TripSection(date: $vm.date, end: vm.endDate)
+
+                    // Odometer (Optional) — commented out for now.
+                    /*
+                    OdometerSection(
+                        startOdo: $vm.startOdoText,
+                        endOdo: $vm.endOdoText,
+                        enteredMilesString: vm.enteredMilesString
+                    )
+                    */
+
+                    RoutePreviewSection(
+                        region: vm.computedRegion(),
+                        pointsCoords: vm.pointsCoords,
+                        startCoordinate: vm.startCoordinate,
+                        endCoordinate: vm.endCoordinate,
+                        requestAuth: { locationManager.requestWhenInUseAuthorization() },
+                        captureLocation: { await locationManager.captureOneShotLocation() },
+                        setStart: { loc in
+                            vm.startLat = loc.coordinate.latitude
+                            vm.startLon = loc.coordinate.longitude
+                        },
+                        setEnd: { loc in
+                            vm.endLat = loc.coordinate.latitude
+                            vm.endLon = loc.coordinate.longitude
+                        },
+                        startLat: vm.startLat,
+                        startLon: vm.startLon,
+                        endLat: vm.endLat,
+                        endLon: vm.endLon,
+                        formatCoord: vm.formatCoord
+                    )
+
+                    DetailsSection(purpose: $vm.purpose, category: $vm.category, notes: $vm.notes)
+
+                    Color.clear.frame(height: 40)
+                }
+                .padding(.horizontal)
+                .padding(.top, 12)
+            }
+            .navigationTitle(isNew ? "New Trip" : "Edit Trip")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { save() }
+                }
+            }
+            .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 8) }
+            .task {
+                await vm.loadPointsIfAvailable(using: store)
+            }
+            .onChange(of: vm.pointsFileName ?? "") { _, _ in
+                Task { await vm.loadPointsIfAvailable(using: store) }
+            }
+        }
+    }
+
+    private func save() {
+        let trip = vm.makeTrip()
+        if isNew {
+            store.add(trip)
+        } else {
+            store.update(trip)
+        }
+        dismiss()
+    }
+}
+
+// MARK: - Small section views
+
+private struct TripSection: View {
+    @Binding var date: Date
+    let end: Date?
+
+    var body: some View {
+        Group {
+            Text("Trip")
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: 8) {
+                // Start date/time picker
+                DatePicker("", selection: $date, displayedComponents: [.date, .hourAndMinute])
+                    .datePickerStyle(.compact)
+                    .labelsHidden()
+
+                // Time summary
+                HStack {
+                    Text("From")
+                    Spacer()
+                    Text(timeString(date))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                if let end {
+                    HStack {
+                        Text("To")
+                        Spacer()
+                        Text(timeString(end))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text("Duration")
+                        Spacer()
+                        Text(durationString(from: date, to: end))
+                            .monospacedDigit()
+                            .foregroundStyle(.primary)
+                    }
+                } else {
+                    HStack {
+                        Text("To")
+                        Spacer()
+                        Text("—")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .padding()
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func timeString(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.dateStyle = .none
+        f.timeStyle = .short
+        return f.string(from: date)
+    }
+
+    private func durationString(from start: Date, to end: Date) -> String {
+        let seconds = max(0, end.timeIntervalSince(start))
+        let hours = Int(seconds) / 3600
+        let minutes = (Int(seconds) % 3600) / 60
+        if hours > 0 {
+            return String(format: "%dh %dm", hours, minutes)
+        } else {
+            return String(format: "%dm", minutes)
+        }
+    }
+}
+
+// Odometer UI commented out for now. Re-enable by uncommenting this block and the call site above.
+/*
+private struct OdometerSection: View {
+    @Binding var startOdo: String
+    @Binding var endOdo: String
+    let enteredMilesString: String
+
+    var body: some View {
+        Group {
+            Text("Odometer (Optional)")
+                .font(.headline)
+
+            VStack(spacing: 12) {
+                HStack {
+                    Text("Start")
+                    TextField("Start", text: $startOdo)
+                        .keyboardType(.decimalPad)
+                        .textFieldStyle(.roundedBorder)
+                }
+                HStack {
+                    Text("End")
+                    TextField("End", text: $endOdo)
+                        .keyboardType(.decimalPad)
+                        .textFieldStyle(.roundedBorder)
+                }
+                HStack {
+                    Text("Entered Miles")
+                    Spacer()
+                    Text(enteredMilesString)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding()
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+*/
+
+private struct RoutePreviewSection: View {
+    let region: MKCoordinateRegion?
+    let pointsCoords: [CLLocationCoordinate2D]
+    let startCoordinate: CLLocationCoordinate2D?
+    let endCoordinate: CLLocationCoordinate2D?
+
+    let requestAuth: () -> Void
+    let captureLocation: () async -> CLLocation?
+    let setStart: (CLLocation) -> Void
+    let setEnd: (CLLocation) -> Void
+
+    let startLat: Double?
+    let startLon: Double?
+    let endLat: Double?
+    let endLon: Double?
+    let formatCoord: (Double) -> String
+
+    var body: some View {
+        Group {
+            Text("Route Preview")
+                .font(.headline)
+
+            if let region {
+                Map(position: .constant(.region(region))) {
+                    if pointsCoords.count >= 2 {
+                        MapPolyline(coordinates: pointsCoords)
+                            .stroke(.blue, lineWidth: 3)
+                    }
+                    if let s = startCoordinate {
+                        Marker("Start", coordinate: s).tint(.green)
+                    }
+                    if let e = endCoordinate {
+                        Marker("End", coordinate: e).tint(.red)
+                    }
+                }
+                .frame(height: 180)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.secondary.opacity(0.2)))
+            } else {
+                Text("No coordinates to preview.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 12)
+            }
+
+            HStack(spacing: 12) {
+                Button {
+                    Task {
+                        requestAuth()
+                        if let loc = await captureLocation() {
+                            setStart(loc)
+                        }
+                    }
+                } label: {
+                    Label("Set Start", systemImage: "mappin.and.ellipse")
+                }
+                .buttonStyle(.bordered)
+
+                Button {
+                    Task {
+                        requestAuth()
+                        if let loc = await captureLocation() {
+                            setEnd(loc)
+                        }
+                    }
+                } label: {
+                    Label("Set End", systemImage: "mappin.circle")
+                }
+                .buttonStyle(.bordered)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                if let slat = startLat, let slon = startLon {
+                    Text("Start: \(formatCoord(slat)), \(formatCoord(slon))")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                if let elat = endLat, let elon = endLon {
+                    Text("End: \(formatCoord(elat)), \(formatCoord(elon))")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding()
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+private struct DetailsSection: View {
+    @Binding var purpose: String
+    @Binding var category: String
+    @Binding var notes: String
+
+    var body: some View {
+        Group {
+            Text("Details")
+                .font(.headline)
+
+            VStack(spacing: 12) {
+                TextField("Purpose", text: $purpose)
+                    .textFieldStyle(.roundedBorder)
+                TextField("Category", text: $category)
+                    .textFieldStyle(.roundedBorder)
+                TextField("Notes", text: $notes, axis: .vertical)
+                    .lineLimit(1...4)
+                    .textFieldStyle(.roundedBorder)
+            }
+        }
+        .padding()
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
     }
 }

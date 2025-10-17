@@ -14,7 +14,7 @@ struct CSVExporter {
 
     // Comment row explaining fields for auditing clarity.
     // Many CSV tools ignore lines starting with '#'.
-    static let comment = "# Note: start_odo/end_odo may be blank if no manual odometer was entered. 'miles' is computed (route > odometer). Coordinates are included when captured. 'miles_source' shows which method was used."
+    static let comment = "# Note: start_odo/end_odo may be blank if no manual odometer was entered. 'miles' is computed (recorded > route > odometer). Coordinates are included when captured. 'miles_source' shows which method was used."
 
     static func makeCSV(trips: [Trip]) -> String {
         // Sort by date ascending (nice-to-have)
@@ -38,7 +38,7 @@ struct CSVExporter {
                 df.string(from: t.date),
                 startOdoField,
                 endOdoField,
-                formatNumber(miles),
+                formatMiles(miles),
                 source,
                 startLatField,
                 startLonField,
@@ -71,12 +71,19 @@ struct CSVExporter {
         }
     }
 
+    // General number formatter used for odometer fields when non-zero.
+    // Leaves integers without decimals; otherwise two decimals.
     private static func formatNumber(_ d: Double) -> String {
         if d.rounded(.towardZero) == d {
             return String(format: "%.0f", d)
         } else {
             return String(format: "%.2f", d)
         }
+    }
+
+    // Miles must always be two decimals for CSV tests.
+    private static func formatMiles(_ d: Double) -> String {
+        String(format: "%.2f", d)
     }
 
     // If value is zero, export an empty field; otherwise format normally.
@@ -94,11 +101,15 @@ struct CSVExporter {
         return String(format: "%.5f", v)
     }
 
-    // Determine which method produced exportMiles (route > odometer).
+    // Determine which method produced exportMiles (recorded > route > odometer).
     private static func milesSourceString(for t: Trip) -> String {
+        if let rec = t.recordedMiles, rec > 0 {
+            return "recorded"
+        }
         if let r = t.routeMiles, r > 0 {
             return "route"
         }
         return "odometer"
     }
 }
+
