@@ -1,4 +1,4 @@
-# simple_mileage_tracker
+# Mileage Tracker
 A simple, privacy-conscious mileage tracking app for tax deduction purposes. 
-![CI](https://github.com/<YOUR-USER>/<YOUR-REPO>/actions/workflows/ci.yml/badge.svg)
-![Monthly sample](https://github.com/<YOUR-USER>/<YOUR-REPO>/actions/workflows/monthly-report.yml/badge.svg)
+![Screenshot](images/main_view.png)
+![Screenshot](images/trip_view.png)
