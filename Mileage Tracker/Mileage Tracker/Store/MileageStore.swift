@@ -94,7 +94,8 @@ final class MileageStore: ObservableObject {
         let summary = recorder.stop(cancel: false)
         setIdleTimerDisabled(false)
         t.recordedMiles = summary.recordedMiles > 0 ? summary.recordedMiles : nil
-        t.pointsFileName = summary.fileName
+        // Master-only JSONL now; per-trip file name is no longer used.
+        t.pointsFileName = nil
         t.pointsCount = summary.pointsCount > 0 ? summary.pointsCount : nil
 
         // Save immediately
@@ -125,7 +126,7 @@ final class MileageStore: ObservableObject {
     }
 
     func cancelCurrentTrip() {
-        // Stop recorder and delete partial file
+        // Stop recorder; master file is append-only so nothing to delete for this trip.
         _ = recorder.stop(cancel: true)
         setIdleTimerDisabled(false)
         currentTripInProgress = nil
@@ -190,6 +191,12 @@ final class MileageStore: ObservableObject {
     func pointsFileURL(fileName: String?) -> URL? {
         guard let name = fileName, !name.isEmpty else { return nil }
         return pointsDirectoryURL.appendingPathComponent(name)
+    }
+
+    // New: return the master JSONL file URL if it exists.
+    func pointsMasterFileURL() -> URL? {
+        let url = pointsDirectoryURL.appendingPathComponent("points_master.jsonl")
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
     private func encoder() -> JSONEncoder {

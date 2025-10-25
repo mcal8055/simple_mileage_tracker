@@ -9,12 +9,13 @@ import Foundation
 
 struct CSVExporter {
     // Header row
-    // Added start_lat,start_lon,end_lat,end_lon for auditing and miles_source to indicate where miles came from.
-    static let header = "date_utc,start_odo,end_odo,miles,miles_source,start_lat,start_lon,end_lat,end_lon,purpose,category,notes,created_at_utc"
+    // Added id (UUID) as the first column for cross-referencing.
+    // start_lat,start_lon,end_lat,end_lon included for auditing and miles_source indicates where miles came from.
+    static let header = "id,date_utc,start_odo,end_odo,miles,miles_source,start_lat,start_lon,end_lat,end_lon,purpose,category,notes,created_at_utc"
 
     // Comment row explaining fields for auditing clarity.
     // Many CSV tools ignore lines starting with '#'.
-    static let comment = "# Note: start_odo/end_odo may be blank if no manual odometer was entered. 'miles' is computed (recorded > route > odometer). Coordinates are included when captured. 'miles_source' shows which method was used."
+    static let comment = "# Note: id is the Trip UUID. start_odo/end_odo may be blank if no manual odometer was entered. 'miles' is computed (recorded > route > odometer). Coordinates are included when captured. 'miles_source' shows which method was used."
 
     static func makeCSV(trips: [Trip]) -> String {
         // Sort by date ascending (nice-to-have)
@@ -35,6 +36,7 @@ struct CSVExporter {
             let source = milesSourceString(for: t)
 
             let fields: [String] = [
+                t.id.uuidString,
                 df.string(from: t.date),
                 startOdoField,
                 endOdoField,

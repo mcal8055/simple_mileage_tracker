@@ -9,13 +9,13 @@ import Foundation
 import CoreLocation
 
 // Foreground-only recorder that samples high-accuracy locations while a trip is active,
-// appends JSON Lines to a per-trip file, and maintains a running distance total.
+// appends JSON Lines to a single master file, and maintains a running distance total.
 @MainActor
 final class LocationRecordingController: NSObject {
 
     // Public summary returned when stopping a recording
     struct Summary {
-        let fileName: String?
+        let fileName: String?    // always nil in master-only mode
         let pointsCount: Int
         let recordedMiles: Double
     }
@@ -25,8 +25,8 @@ final class LocationRecordingController: NSObject {
     // Active session state
     private var activeTripID: UUID?
     private var pointsDirURL: URL?
-    private var fileURL: URL?
-    private var fileHandle: FileHandle?
+    private var masterFileURL: URL?
+    private var masterFileHandle: FileHandle?
     private var jsonEncoder = JSONEncoder()
 
     // Last accepted point for distance accumulation
@@ -58,7 +58,7 @@ final class LocationRecordingController: NSObject {
         pointsCount
     }
 
-    // Start recording for a specific trip id. Creates/opens a JSON Lines file under baseDirectory/points.
+    // Start recording for a specific trip id. Opens/creates a single master JSON Lines file under baseDirectory/points.
     func start(for tripID: UUID, baseDirectory: URL) throws {
         guard activeTripID == nil else { return } // already recording
 
@@ -66,24 +66,26 @@ final class LocationRecordingController: NSObject {
         let pointsDir = baseDirectory.appendingPathComponent("points", isDirectory: true)
         try FileManager.default.createDirectory(at: pointsDir, withIntermediateDirectories: true)
 
-        // Prepare file path: trip_<UUID>.jsonl
-        let fileName = "trip_\(tripID.uuidString).jsonl"
-        let url = pointsDir.appendingPathComponent(fileName)
-
-        // Create file if missing
-        if !FileManager.default.fileExists(atPath: url.path) {
-            FileManager.default.createFile(atPath: url.path, contents: nil)
+        // Prepare master file path: points_master.jsonl
+        let masterURL = pointsDir.appendingPathComponent("points_master.jsonl")
+        if !FileManager.default.fileExists(atPath: masterURL.path) {
+            FileManager.default.createFile(atPath: masterURL.path, contents: nil)
+            // Optional human-readable header; JSONL parsers expecting pure JSON can skip it.
+            if let headerData = "# TripPoint JSON Lines (all trips; one JSON object per line)\n".data(using: .utf8) {
+                let tmp = try FileHandle(forWritingTo: masterURL)
+                try tmp.seekToEnd()
+                tmp.write(headerData)
+                try? tmp.close()
+            }
         }
-
-        // Open for appending
-        let handle = try FileHandle(forWritingTo: url)
-        try handle.seekToEnd()
+        let masterHandle = try FileHandle(forWritingTo: masterURL)
+        try masterHandle.seekToEnd()
 
         // Reset counters
         activeTripID = tripID
         pointsDirURL = pointsDir
-        fileURL = url
-        fileHandle = handle
+        masterFileURL = masterURL
+        masterFileHandle = masterHandle
         lastPoint = nil
         metersAccumulated = 0
         pointsCount = 0
@@ -92,28 +94,24 @@ final class LocationRecordingController: NSObject {
         manager.startUpdatingLocation()
     }
 
-    // Stop recording. If cancel == true, delete the partial file.
+    // Stop recording.
     func stop(cancel: Bool) -> Summary {
         manager.stopUpdatingLocation()
 
+        // Close handle first to flush any buffered data
+        try? masterFileHandle?.close()
+        masterFileHandle = nil
+
         let summary = Summary(
-            fileName: cancel ? nil : fileURL?.lastPathComponent,
+            fileName: nil, // master-only mode: no per-trip file
             pointsCount: pointsCount,
             recordedMiles: metersAccumulated / 1609.344
         )
 
-        // Close handle
-        try? fileHandle?.close()
-        fileHandle = nil
-
-        if cancel, let url = fileURL {
-            try? FileManager.default.removeItem(at: url)
-        }
-
         // Clear state
         activeTripID = nil
         pointsDirURL = nil
-        fileURL = nil
+        masterFileURL = nil
         lastPoint = nil
         metersAccumulated = 0
         pointsCount = 0
@@ -123,10 +121,32 @@ final class LocationRecordingController: NSObject {
 
     // MARK: - Internal helpers
 
+    // Flat JSON object that includes trip UUID alongside the TripPoint fields for audit grouping.
+    private struct EncodedPoint: Encodable {
+        let tripId: UUID
+        let ts: Date
+        let lat: Double
+        let lon: Double
+        let hAcc: Double
+        let speed: Double?
+        let course: Double?
+
+        init(tripId: UUID, point: TripPoint) {
+            self.tripId = tripId
+            self.ts = point.ts
+            self.lat = point.lat
+            self.lon = point.lon
+            self.hAcc = point.hAcc
+            self.speed = point.speed
+            self.course = point.course
+        }
+    }
+
     private func append(point: TripPoint) {
-        guard let handle = fileHandle else { return }
+        guard let tripId = activeTripID, let handle = masterFileHandle else { return }
         do {
-            let data = try jsonEncoder.encode(point)
+            let encoded = EncodedPoint(tripId: tripId, point: point)
+            let data = try jsonEncoder.encode(encoded)
             handle.write(data)
             handle.write(Data([0x0A])) // newline
             pointsCount += 1
@@ -174,7 +194,7 @@ final class LocationRecordingController: NSObject {
             }
             lastPoint = point
 
-            // Append to file
+            // Append to master file (one JSON object per line, with tripId)
             append(point: point)
         }
     }
@@ -200,4 +220,3 @@ extension LocationRecordingController: CLLocationManagerDelegate {
         // Keep recorder logic simple here.
     }
 }
-

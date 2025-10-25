@@ -106,12 +106,11 @@ struct CSVExporterTests {
         let csv = CSVExporter.makeCSV(trips: [t2, t3, t1])
         let lines = csv.split(separator: "\n").dropFirst(2) // skip comment + header
 
-        // Extract purposes to confirm order A, C, B (d1, d3, d2)
+        // With id added as first column, purpose is now the 11th field (0-based index 10)
         let purposes = lines.compactMap { line -> String? in
-            // purpose is the 10th field (0-based index 9)
             let parts = line.split(separator: ",", omittingEmptySubsequences: false)
-            guard parts.count >= 10 else { return nil }
-            return String(parts[9]).replacingOccurrences(of: "\"", with: "")
+            guard parts.count >= 11 else { return nil }
+            return String(parts[10]).replacingOccurrences(of: "\"", with: "")
         }
         #expect(purposes == ["A", "C", "B"])
     }
@@ -129,7 +128,7 @@ struct MileageStoreInMemoryTests {
     func addSorts() async {
         let temp = uniqueTempDirectory()
         let store = await MainActor.run { MileageStore(baseDirectoryURL: temp) }
-        let older = Trip(date: Date(timeIntervalSince1970: 0), startOdo: 0, endOdo: 0, purpose: "old", category: "", notes: "")
+        let older = Trip(date: Date(timeIntervalSince1970: 0), startOdo: 120.0, endOdo: 100.0, purpose: "old", category: "", notes: "")
         let newer = Trip(date: Date(), startOdo: 0, endOdo: 0, purpose: "new", category: "", notes: "")
 
         await MainActor.run {
@@ -298,5 +297,158 @@ struct MileageStoreInMemoryTests {
         let miles = await MainActor.run { store.trips.first(where: { $0.id == t.id })?.routeMiles }
         #expect(miles == 12.34)
     }
+}
+
+@Suite("Breadcrumb export")
+struct BreadcrumbExportTests {
+
+    // Create two small JSONL files, combine them, and verify content.
+    @Test
+    func combineJSONLConcatenatesFiles() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let file1 = dir.appendingPathComponent("trip_a.jsonl")
+        let file2 = dir.appendingPathComponent("trip_b.jsonl")
+
+        // Two simple JSON objects per file, each ending with newline.
+        let content1 = """
+        {"ts":"1970-01-01T00:00:00Z","lat":1.0,"lon":2.0,"hAcc":10}
+        {"ts":"1970-01-01T00:01:00Z","lat":1.1,"lon":2.1,"hAcc":12}
+        """
+
+        let content2 = """
+        {"ts":"1970-01-01T00:02:00Z","lat":3.0,"lon":4.0,"hAcc":8}
+        {"ts":"1970-01-01T00:03:00Z","lat":3.1,"lon":4.1,"hAcc":9}
+        """
+
+        try (content1 + "\n").data(using: .utf8)?.write(to: file1, options: .atomic)
+        try (content2 + "\n").data(using: .utf8)?.write(to: file2, options: .atomic)
+
+        let outURL = try BreadcrumbExporter.combineJSONL(from: [file1, file2], outputName: "combined_test.jsonl")
+        let combined = try String(contentsOf: outURL, encoding: .utf8)
+
+        // Expect header line, then all four JSON lines present.
+        #expect(combined.contains("# Combined TripPoint JSON Lines"))
+        #expect(combined.contains(#""lat":1.0,"lon":2.0"#))
+        #expect(combined.contains(#""lat":1.1,"lon":2.1"#))
+        #expect(combined.contains(#""lat":3.0,"lon":4.0"#))
+        #expect(combined.contains(#""lat":3.1,"lon":4.1"#))
+
+        // Basic sanity: at least 5 lines (1 header + 4 points), ignoring any trailing blank.
+        let lines = combined.split(separator: "\n", omittingEmptySubsequences: false)
+        #expect(lines.count >= 5)
+    }
+
+@Suite("Master JSONL (points_master.jsonl)")
+    struct MileageMasterJSONLTests {
+
+        // Helper to make a unique temp directory URL for each test
+        private func uniqueTempDirectory() -> URL {
+            FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        }
+
+        @Test("Starting a trip creates points_master.jsonl and pointsMasterFileURL() returns it")
+        func masterFileCreatedOnStart() async throws {
+            let base = uniqueTempDirectory()
+            let store = await MainActor.run { MileageStore(baseDirectoryURL: base) }
+
+            await MainActor.run {
+                store.startTrip(at: Date(), startLat: nil, startLon: nil)
+            }
+
+            // Give any async file ops a brief moment
+            try await Task.sleep(nanoseconds: 50_000_000)
+
+            let url = await MainActor.run { store.pointsMasterFileURL() }
+            #expect(url != nil)
+
+            // Ensure the file exists on disk
+            if let url {
+                let exists = FileManager.default.fileExists(atPath: url.path)
+                #expect(exists)
+            }
+
+            // Cleanup: cancel the trip (does not delete master file)
+            await MainActor.run {
+                store.cancelCurrentTrip()
+            }
+        }
+
+        @Test("Finalizing a trip leaves points_master.jsonl in place")
+        func masterFilePersistsAfterFinalize() async throws {
+            let base = uniqueTempDirectory()
+            let store = await MainActor.run { MileageStore(baseDirectoryURL: base) }
+
+            await MainActor.run {
+                store.startTrip(at: Date(), startLat: nil, startLon: nil)
+            }
+
+            // Finalize quickly (no actual points recorded in this test)
+            await MainActor.run {
+                store.finalizeCurrentTrip(endOdo: 0, endLat: nil, endLon: nil)
+            }
+
+            // Give any async file ops a brief moment
+            try await Task.sleep(nanoseconds: 50_000_000)
+
+            let url = await MainActor.run { store.pointsMasterFileURL() }
+            #expect(url != nil)
+
+            if let url {
+                let exists = FileManager.default.fileExists(atPath: url.path)
+                #expect(exists)
+            }
+        }
+
+        @Test("Canceling a trip leaves points_master.jsonl in place")
+        func masterFilePersistsAfterCancel() async throws {
+            let base = uniqueTempDirectory()
+            let store = await MainActor.run { MileageStore(baseDirectoryURL: base) }
+
+            await MainActor.run {
+                store.startTrip(at: Date(), startLat: nil, startLon: nil)
+                store.cancelCurrentTrip()
+            }
+
+            // Give any async file ops a brief moment
+            try await Task.sleep(nanoseconds: 50_000_000)
+
+            let url = await MainActor.run { store.pointsMasterFileURL() }
+            #expect(url != nil)
+
+            if let url {
+                let exists = FileManager.default.fileExists(atPath: url.path)
+                #expect(exists)
+            }
+        }
+    }
+
+@Suite("CSVExporter uses Trip.id")
+    struct CSVExporterTripIdTests {
+
+        @Test("CSV includes the provided Trip UUID as the id column")
+        func csvIncludesTripUUID() {
+            var trip = Trip(
+                date: Date(timeIntervalSince1970: 0),
+                startOdo: 0,
+                endOdo: 0,
+                purpose: "Test",
+                category: "Cat",
+                notes: "Note"
+            )
+            // Set a known UUID so we can assert on it
+            let known = UUID(uuidString: "01234567-89AB-CDEF-0123-456789ABCDEF")!
+            trip.id = known
+
+            let csv = CSVExporter.makeCSV(trips: [trip])
+
+            // Expect the UUID string to appear as the first column of the data row
+            #expect(csv.contains(known.uuidString))
+            // Also sanity-check that the header exists
+            #expect(csv.contains(CSVExporter.header))
+        }
+    }
+
 }
 

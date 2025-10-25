@@ -146,6 +146,29 @@ struct TripListView: View {
                                     .foregroundStyle(.primary)
                             }
                         }
+                        // Context menu: per-trip breadcrumbs file removed in master-only mode.
+                        .contextMenu {
+                            if let url = store.pointsMasterFileURL() {
+                                Button {
+                                    shareItem = ShareItem(url: url)
+                                } label: {
+                                    Label("Export All Breadcrumbs (.jsonl)", systemImage: "square.and.arrow.up")
+                                }
+                            } else {
+                                Text("No breadcrumbs file")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            if let url = store.pointsMasterFileURL() {
+                                Button {
+                                    shareItem = ShareItem(url: url)
+                                } label: {
+                                    Label("Export", systemImage: "square.and.arrow.up")
+                                }
+                                .tint(.blue)
+                            }
+                        }
                     }
                     .onDelete(perform: store.delete)
                 }
@@ -156,6 +179,7 @@ struct TripListView: View {
                     Menu {
                         Button("Export All") { exportAllCSV() }
                         Button("Export Week") { exportCurrentWeekCSV() }
+                        Button("Export JSON") { exportAllBreadcrumbsJSON() } // Now uses master file when available
                     } label: {
                         Label("Export", systemImage: "square.and.arrow.up")
                     }
@@ -345,6 +369,70 @@ struct TripListView: View {
         let csv = CSVExporter.makeCSV(trips: weekTrips)
         let (year, week) = isoYearWeek(for: today)
         share(csvString: csv, suggestedName: "trips_\(year)-W\(String(format: "%02d", week)).csv")
+    }
+
+    // MARK: - Export JSON (breadcrumbs)
+
+    private func exportAllBreadcrumbsJSON() {
+        // Prefer master file when available (audit-friendly single source).
+        if let master = store.pointsMasterFileURL() {
+            shareItem = ShareItem(url: master)
+            return
+        }
+
+        // Fallback: combine any per-trip files (legacy).
+        let urls: [URL] = store.trips
+            .compactMap { store.pointsFileURL(fileName: $0.pointsFileName) }
+            .reduce(into: [], { acc, url in
+                if !acc.contains(url) { acc.append(url) }
+            })
+
+        guard !urls.isEmpty else {
+            return
+        }
+
+        do {
+            let combinedURL = try writeCombinedJSONL(from: urls, name: "points_all_\(timestamp()).jsonl")
+            shareItem = ShareItem(url: combinedURL)
+        } catch {
+            print("Failed to build combined JSONL: \(error)")
+        }
+    }
+
+    private func writeCombinedJSONL(from urls: [URL], name: String) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+        let outURL = dir.appendingPathComponent(name)
+
+        // Create/overwrite the output file
+        if FileManager.default.fileExists(atPath: outURL.path) {
+            try FileManager.default.removeItem(at: outURL)
+        }
+        FileManager.default.createFile(atPath: outURL.path, contents: nil)
+
+        let outHandle = try FileHandle(forWritingTo: outURL)
+        defer { try? outHandle.close() }
+
+        // Optional comment header line
+        if let headerData = "# Combined TripPoint JSON Lines (concatenated)\n".data(using: .utf8) {
+            outHandle.write(headerData)
+        }
+
+        // Append each source file verbatim
+        for url in urls {
+            // Stream copy to avoid large memory spikes
+            let inHandle = try FileHandle(forReadingFrom: url)
+            defer { try? inHandle.close() }
+
+            while let chunk = try inHandle.read(upToCount: 64 * 1024), !chunk.isEmpty {
+                outHandle.write(chunk)
+            }
+            // Ensure final newline between files (JSONL typically ends with newline; be tolerant)
+            if let nl = "\n".data(using: .utf8) {
+                outHandle.write(nl)
+            }
+        }
+
+        return outURL
     }
 
     // MARK: - Sharing helpers

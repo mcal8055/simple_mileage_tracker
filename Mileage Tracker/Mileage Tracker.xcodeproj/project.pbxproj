@@ -84,6 +84,20 @@
 			);
 			target = 8A511CCE2EA179130026FA6A /* MT Watch App */;
 		};
+		8AA219F92EAC71B2005E802C /* Exceptions for "Mileage TrackerTests" folder in "Mileage Tracker" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				MileageMasterJSONLTests.swift,
+			);
+			target = 8A511C752EA0162C0026FA6A /* Mileage Tracker */;
+		};
+		8AA219FA2EAC71B2005E802C /* Exceptions for "Mileage TrackerTests" folder in "Mileage TrackerTests" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				MileageMasterJSONLTests.swift,
+			);
+			target = 8A511C822EA0162D0026FA6A /* Mileage TrackerTests */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -97,6 +111,10 @@
 		};
 		8A511C862EA0162D0026FA6A /* Mileage TrackerTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				8AA219F92EAC71B2005E802C /* Exceptions for "Mileage TrackerTests" folder in "Mileage Tracker" target */,
+				8AA219FA2EAC71B2005E802C /* Exceptions for "Mileage TrackerTests" folder in "Mileage TrackerTests" target */,
+			);
 			path = "Mileage TrackerTests";
 			sourceTree = "<group>";
 		};
