@@ -18,8 +18,8 @@ final class EditTripViewModel: ObservableObject {
     @Published var endDate: Date? = nil
     @Published var startOdoText: String = ""
     @Published var endOdoText: String = ""
-    @Published var purpose: String = ""
-    @Published var category: String = ""
+    @Published var purpose: String = ""   // Will represent "Client"
+    @Published var category: String = ""  // Will represent "Service"
     @Published var notes: String = ""
     @Published var createdAt: Date = Date()
 
@@ -147,12 +147,22 @@ final class EditTripViewModel: ObservableObject {
     }
 
     func loadPointsIfAvailable(using store: MileageStore) async {
-        guard let url = pointsURL(using: store) else {
-            pointsCoords = []
+        // Prefer legacy per-trip file if present
+        if let url = pointsURL(using: store) {
+            let coords = (try? await pointsReader.loadPoints(from: url)) ?? []
+            pointsCoords = coords
             return
         }
-        let coords = (try? await pointsReader.loadPoints(from: url)) ?? []
-        pointsCoords = coords
+
+        // Fallback: read from master file and filter by this trip's id
+        if let masterURL = store.pointsMasterFileURL() {
+            let coords = (try? await pointsReader.loadPointsFromMaster(masterURL, forTripId: id)) ?? []
+            pointsCoords = coords
+            return
+        }
+
+        // Nothing available
+        pointsCoords = []
     }
 
     func makeTrip() -> Trip {
@@ -162,8 +172,8 @@ final class EditTripViewModel: ObservableObject {
             endDate: endDate,
             startOdo: startOdo,
             endOdo: endOdo,
-            purpose: purpose.trimmingCharacters(in: .whitespacesAndNewlines),
-            category: category.trimmingCharacters(in: .whitespacesAndNewlines),
+            purpose: purpose.trimmingCharacters(in: .whitespacesAndNewlines),   // Client
+            category: category.trimmingCharacters(in: .whitespacesAndNewlines), // Service
             notes: notes.trimmingCharacters(in: .whitespacesAndNewlines),
             createdAt: createdAt,
             startLat: startLat,
@@ -196,7 +206,6 @@ struct EditTripView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var store: MileageStore
 
-    @StateObject private var locationManager = LocationManager()
     @StateObject private var vm: EditTripViewModel
 
     private let isNew: Bool
@@ -226,16 +235,6 @@ struct EditTripView: View {
                         pointsCoords: vm.pointsCoords,
                         startCoordinate: vm.startCoordinate,
                         endCoordinate: vm.endCoordinate,
-                        requestAuth: { locationManager.requestWhenInUseAuthorization() },
-                        captureLocation: { await locationManager.captureOneShotLocation() },
-                        setStart: { loc in
-                            vm.startLat = loc.coordinate.latitude
-                            vm.startLon = loc.coordinate.longitude
-                        },
-                        setEnd: { loc in
-                            vm.endLat = loc.coordinate.latitude
-                            vm.endLon = loc.coordinate.longitude
-                        },
                         startLat: vm.startLat,
                         startLon: vm.startLon,
                         endLat: vm.endLat,
@@ -243,7 +242,8 @@ struct EditTripView: View {
                         formatCoord: vm.formatCoord
                     )
 
-                    DetailsSection(purpose: $vm.purpose, category: $vm.category, notes: $vm.notes)
+                    DetailsSection(service: $vm.category, client: $vm.purpose, notes: $vm.notes)
+                        .environmentObject(store)
 
                     Color.clear.frame(height: 40)
                 }
@@ -399,11 +399,6 @@ private struct RoutePreviewSection: View {
     let startCoordinate: CLLocationCoordinate2D?
     let endCoordinate: CLLocationCoordinate2D?
 
-    let requestAuth: () -> Void
-    let captureLocation: () async -> CLLocation?
-    let setStart: (CLLocation) -> Void
-    let setEnd: (CLLocation) -> Void
-
     let startLat: Double?
     let startLon: Double?
     let endLat: Double?
@@ -439,32 +434,6 @@ private struct RoutePreviewSection: View {
                     .padding(.vertical, 12)
             }
 
-            HStack(spacing: 12) {
-                Button {
-                    Task {
-                        requestAuth()
-                        if let loc = await captureLocation() {
-                            setStart(loc)
-                        }
-                    }
-                } label: {
-                    Label("Set Start", systemImage: "mappin.and.ellipse")
-                }
-                .buttonStyle(.bordered)
-
-                Button {
-                    Task {
-                        requestAuth()
-                        if let loc = await captureLocation() {
-                            setEnd(loc)
-                        }
-                    }
-                } label: {
-                    Label("Set End", systemImage: "mappin.circle")
-                }
-                .buttonStyle(.bordered)
-            }
-
             VStack(alignment: .leading, spacing: 4) {
                 if let slat = startLat, let slon = startLon {
                     Text("Start: \(formatCoord(slat)), \(formatCoord(slon))")
@@ -484,9 +453,21 @@ private struct RoutePreviewSection: View {
 }
 
 private struct DetailsSection: View {
-    @Binding var purpose: String
-    @Binding var category: String
+    @EnvironmentObject private var store: MileageStore
+
+    // category = Service, purpose = Client
+    @Binding var service: String
+    @Binding var client: String
     @Binding var notes: String
+
+    @State private var showingAddClient = false
+    @State private var newClientName: String = ""
+
+    private let serviceOptions: [String] = [
+        "House Sitting",
+        "Drop-ins",
+        "Dog Walking"
+    ]
 
     var body: some View {
         Group {
@@ -494,10 +475,59 @@ private struct DetailsSection: View {
                 .font(.headline)
 
             VStack(spacing: 12) {
-                TextField("Purpose", text: $purpose)
-                    .textFieldStyle(.roundedBorder)
-                TextField("Category", text: $category)
-                    .textFieldStyle(.roundedBorder)
+                // Service dropdown (mapped to Trip.category)
+                HStack {
+                    Text("Service")
+                    Spacer()
+                    Picker("Service", selection: $service) {
+                        ForEach(serviceOptions, id: \.self) { option in
+                            Text(option).tag(option)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+
+                // Client dropdown (mapped to Trip.purpose) with add-new flow
+                HStack(alignment: .center) {
+                    Text("Client")
+                    Spacer()
+                    Picker("Client", selection: $client) {
+                        ForEach(store.clients, id: \.self) { name in
+                            Text(name).tag(name)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+
+                HStack {
+                    Button {
+                        newClientName = ""
+                        showingAddClient = true
+                    } label: {
+                        Label("Add New Client", systemImage: "plus.circle")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    Spacer()
+
+                    // Quick remove if selected exists
+                    if !client.isEmpty, store.clients.contains(where: { $0.caseInsensitiveCompare(client) == .orderedSame }) {
+                        Button(role: .destructive) {
+                            store.removeClient(named: client)
+                            if let first = store.clients.first {
+                                client = first
+                            } else {
+                                client = ""
+                            }
+                        } label: {
+                            Label("Remove Client", systemImage: "trash")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+
                 TextField("Notes", text: $notes, axis: .vertical)
                     .lineLimit(1...4)
                     .textFieldStyle(.roundedBorder)
@@ -505,5 +535,40 @@ private struct DetailsSection: View {
         }
         .padding()
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .sheet(isPresented: $showingAddClient) {
+            NavigationStack {
+                Form {
+                    Section("New Client") {
+                        TextField("Client name", text: $newClientName)
+                            .textInputAutocapitalization(.words)
+                            .autocorrectionDisabled(false)
+                    }
+                }
+                .navigationTitle("Add Client")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { showingAddClient = false }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save") {
+                            let name = newClientName.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !name.isEmpty else { return }
+                            store.addClient(name)
+                            client = name
+                            showingAddClient = false
+                        }
+                        .disabled(newClientName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+            }
+            .presentationDetents([.height(220)])
+        }
+        .onAppear {
+            // If service is empty, don't auto-select; user can choose.
+            // If client is empty but we have existing clients, preselect first for convenience.
+            if client.isEmpty, let first = store.clients.first {
+                client = first
+            }
+        }
     }
 }
