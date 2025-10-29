@@ -23,8 +23,14 @@ final class MileageStore: ObservableObject {
         didSet { Task { await saveInProgress() } }
     }
 
+    // Persisted list of client names for the Client dropdown
+    @Published var clients: [String] = [] {
+        didSet { Task { await saveClients() } }
+    }
+
     private let tripsFileName = "trips.json"
     private let inProgressFileName = "trip_in_progress.json"
+    private let clientsFileName = "clients.json"
     private let pointsDirectoryName = "points"
 
     // Injected base directory for persistence (defaults to app Documents).
@@ -47,6 +53,7 @@ final class MileageStore: ObservableObject {
         Task {
             await loadTrips()
             await loadInProgress()
+            await loadClients()
         }
     }
 
@@ -104,6 +111,8 @@ final class MileageStore: ObservableObject {
         currentTripInProgress = nil
 
         // If we have both coordinates, compute route miles asynchronously and update later.
+        // Note: MKDirections is unavailable on watchOS; skip route calculation on watch.
+        #if !os(watchOS)
         if let sLat = t.startLat, let sLon = t.startLon,
            let eLat = t.endLat, let eLon = t.endLon {
             let start = CLLocationCoordinate2D(latitude: sLat, longitude: sLon)
@@ -115,6 +124,7 @@ final class MileageStore: ObservableObject {
                 await self?.applyRouteMiles(miles, toTripID: t.id)
             }
         }
+        #endif
     }
 
     private func applyRouteMiles(_ miles: Double, toTripID id: UUID) {
@@ -140,6 +150,21 @@ final class MileageStore: ObservableObject {
 
     func livePointsCount() -> Int {
         recorder.currentPointsCount
+    }
+
+    // MARK: - Clients list management
+
+    func addClient(_ name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let exists = clients.contains { $0.caseInsensitiveCompare(trimmed) == .orderedSame }
+        guard !exists else { return }
+        clients.append(trimmed)
+        clients.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    func removeClient(named name: String) {
+        clients.removeAll { $0.caseInsensitiveCompare(name) == .orderedSame }
     }
 
     // MARK: - CRUD (legacy edit path still supported)
@@ -185,6 +210,10 @@ final class MileageStore: ObservableObject {
 
     private var pointsDirectoryURL: URL {
         baseDirectoryURL.appendingPathComponent(pointsDirectoryName, isDirectory: true)
+    }
+
+    private var clientsURL: URL {
+        baseDirectoryURL.appendingPathComponent(clientsFileName)
     }
 
     // Build a full URL to a points file name under the points directory.
@@ -257,6 +286,27 @@ final class MileageStore: ObservableObject {
             }
         } catch {
             print("Failed to save in-progress trip: \(error)")
+        }
+    }
+
+    func loadClients() async {
+        do {
+            guard FileManager.default.fileExists(atPath: clientsURL.path) else { return }
+            let data = try Data(contentsOf: clientsURL)
+            let loaded = try JSONDecoder().decode([String].self, from: data)
+            self.clients = loaded
+        } catch {
+            print("Failed to load clients: \(error)")
+        }
+    }
+
+    func saveClients() async {
+        do {
+            try ensureBaseDirectoryExists()
+            let data = try JSONEncoder().encode(clients)
+            try data.write(to: clientsURL, options: [.atomic])
+        } catch {
+            print("Failed to save clients: \(error)")
         }
     }
 
