@@ -466,7 +466,8 @@ private struct DetailsSection: View {
     private let serviceOptions: [String] = [
         "House Sitting",
         "Drop-ins",
-        "Dog Walking"
+        "Dog Walking",
+        "Meet & Greet"
     ]
 
     var body: some View {

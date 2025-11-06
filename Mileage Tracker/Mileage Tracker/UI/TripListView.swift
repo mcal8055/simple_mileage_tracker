@@ -27,6 +27,9 @@ struct TripListView: View {
     @State private var isPollingStats: Bool = false
     @State private var statsTimer: Timer?
 
+    // Collapsible month sections: collapsed by default (empty set means none expanded)
+    @State private var expandedMonths: Set<YearMonth> = []
+
     var body: some View {
         NavigationStack {
             List {
@@ -123,54 +126,70 @@ struct TripListView: View {
                     }
                 }
 
-                // Existing trips
-                Section("Trips") {
-                    ForEach(store.trips) { trip in
-                        Button {
-                            // Present edit for this specific trip
-                            editTrip = trip
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading) {
-                                    Text(dateString(trip.date))
-                                        .font(.headline)
-                                    if !trip.purpose.isEmpty {
-                                        Text(trip.purpose)
+                // Grouped, collapsible trips by month with most recent first
+                ForEach(groupedMonthsDescending(), id: \.self) { month in
+                    Section {
+                        DisclosureGroup(isExpanded: bindingForMonth(month)) {
+                            // Trips within this month, most recent first
+                            let tripsInMonth = tripsForMonth(month).sorted(by: { $0.date > $1.date })
+                            ForEach(tripsInMonth) { trip in
+                                Button {
+                                    // Present edit for this specific trip
+                                    editTrip = trip
+                                } label: {
+                                    HStack {
+                                        VStack(alignment: .leading) {
+                                            Text(dateString(trip.date))
+                                                .font(.headline)
+                                            if !trip.purpose.isEmpty {
+                                                Text(trip.purpose)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                        }
+                                        Spacer()
+                                        // Prefer automated miles via exportMiles (recorded > route > odometer)
+                                        Text(milesString(trip.exportMiles))
+                                            .monospacedDigit()
+                                            .foregroundStyle(.primary)
+                                    }
+                                }
+                                // Context menu: per-trip breadcrumbs file removed in master-only mode.
+                                .contextMenu {
+                                    if let url = store.pointsMasterFileURL() {
+                                        Button {
+                                            shareItem = ShareItem(url: url)
+                                        } label: {
+                                            Label("Export All Breadcrumbs (.jsonl)", systemImage: "square.and.arrow.up")
+                                        }
+                                    } else {
+                                        Text("No breadcrumbs file")
                                             .foregroundStyle(.secondary)
                                     }
                                 }
-                                Spacer()
-                                // Prefer automated miles via exportMiles (recorded > route > odometer)
-                                Text(milesString(trip.exportMiles))
-                                    .monospacedDigit()
-                                    .foregroundStyle(.primary)
-                            }
-                        }
-                        // Context menu: per-trip breadcrumbs file removed in master-only mode.
-                        .contextMenu {
-                            if let url = store.pointsMasterFileURL() {
-                                Button {
-                                    shareItem = ShareItem(url: url)
-                                } label: {
-                                    Label("Export All Breadcrumbs (.jsonl)", systemImage: "square.and.arrow.up")
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    if let url = store.pointsMasterFileURL() {
+                                        Button {
+                                            shareItem = ShareItem(url: url)
+                                        } label: {
+                                            Label("Export", systemImage: "square.and.arrow.up")
+                                        }
+                                        .tint(.blue)
+                                    }
                                 }
-                            } else {
-                                Text("No breadcrumbs file")
+                            }
+                            .onDelete { offsets in
+                                deleteTrips(in: month, offsets: offsets)
+                            }
+                        } label: {
+                            HStack {
+                                Text(monthTitle(for: month))
+                                Spacer()
+                                // Optional: show count in header
+                                Text("\(tripsForMonth(month).count)")
                                     .foregroundStyle(.secondary)
                             }
                         }
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            if let url = store.pointsMasterFileURL() {
-                                Button {
-                                    shareItem = ShareItem(url: url)
-                                } label: {
-                                    Label("Export", systemImage: "square.and.arrow.up")
-                                }
-                                .tint(.blue)
-                            }
-                        }
                     }
-                    .onDelete(perform: store.delete)
                 }
             }
             .navigationTitle("Trips")
@@ -222,6 +241,77 @@ struct TripListView: View {
                 }
             }
         }
+    }
+
+    // MARK: - Grouping helpers (most recent first)
+
+    // Month key
+    private struct YearMonth: Hashable {
+        let year: Int
+        let month: Int
+
+        init(date: Date, calendar: Calendar = Calendar.current) {
+            let comps = calendar.dateComponents([.year, .month], from: date)
+            self.year = comps.year ?? 0
+            self.month = comps.month ?? 1
+        }
+    }
+
+    private func groupedMonthsDescending() -> [YearMonth] {
+        let cal = Calendar.current
+        let keys = Set(store.trips.map { YearMonth(date: $0.date, calendar: cal) })
+        // Sort by year/month descending (most recent first)
+        return keys.sorted {
+            if $0.year != $1.year { return $0.year > $1.year }
+            return $0.month > $1.month
+        }
+    }
+
+    private func tripsForMonth(_ ym: YearMonth) -> [Trip] {
+        let cal = Calendar.current
+        return store.trips.filter {
+            let comps = cal.dateComponents([.year, .month], from: $0.date)
+            return comps.year == ym.year && comps.month == ym.month
+        }
+    }
+
+    private func monthTitle(for ym: YearMonth) -> String {
+        var comps = DateComponents()
+        comps.year = ym.year
+        comps.month = ym.month
+        let cal = Calendar.current
+        let date = cal.date(from: comps) ?? Date()
+        let f = DateFormatter()
+        f.dateFormat = "LLLL yyyy" // e.g., January 2025
+        return f.string(from: date)
+    }
+
+    private func bindingForMonth(_ ym: YearMonth) -> Binding<Bool> {
+        Binding(
+            get: { expandedMonths.contains(ym) },
+            set: { isExpanded in
+                if isExpanded {
+                    expandedMonths.insert(ym)
+                } else {
+                    expandedMonths.remove(ym)
+                }
+            }
+        )
+    }
+
+    private func deleteTrips(in month: YearMonth, offsets: IndexSet) {
+        // Determine the trips in this month in the same order as displayed (descending)
+        let monthTripsDesc = tripsForMonth(month).sorted(by: { $0.date > $1.date })
+        // Map the offsets (relative to monthTripsDesc) back to indices in store.trips
+        var globalIndices = IndexSet()
+        for offset in offsets {
+            guard monthTripsDesc.indices.contains(offset) else { continue }
+            let trip = monthTripsDesc[offset]
+            if let idx = store.trips.firstIndex(where: { $0.id == trip.id }) {
+                globalIndices.insert(idx)
+            }
+        }
+        store.delete(at: globalIndices)
     }
 
     // MARK: - Polling live stats
