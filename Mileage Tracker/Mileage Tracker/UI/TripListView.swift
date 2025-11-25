@@ -20,6 +20,7 @@ struct TripListView: View {
     // End trip sheet
     @State private var showingEndSheet = false
     @State private var endOdoText: String = ""
+    @FocusState private var endOdoFocused: Bool
 
     // Live in-progress stats
     @State private var liveMiles: Double = 0
@@ -153,6 +154,8 @@ struct TripListView: View {
                                             .foregroundStyle(.primary)
                                     }
                                 }
+                                // Important: make the row act like a plain row so edit controls work properly.
+                                .buttonStyle(.plain)
                                 // Context menu: per-trip breadcrumbs file removed in master-only mode.
                                 .contextMenu {
                                     if let url = store.pointsMasterFileURL() {
@@ -166,7 +169,13 @@ struct TripListView: View {
                                             .foregroundStyle(.secondary)
                                     }
                                 }
-                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                .swipeActions(edge: .trailing) {
+                                    // Provide a clear per-row delete action
+                                    Button(role: .destructive) {
+                                        deleteTrip(trip)
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
                                     if let url = store.pointsMasterFileURL() {
                                         Button {
                                             shareItem = ShareItem(url: url)
@@ -230,7 +239,9 @@ struct TripListView: View {
             // Finalize sheet
             .sheet(isPresented: $showingEndSheet) {
                 endTripSheet
-                    .presentationDetents([.height(220)])
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+                    .scrollDismissesKeyboard(.interactively)
             }
             .onChange(of: store.currentTripInProgress != nil) { _, active in
                 // Start/stop polling based on trip state
@@ -312,6 +323,13 @@ struct TripListView: View {
             }
         }
         store.delete(at: globalIndices)
+    }
+
+    // Convenience for swipe-to-delete on a single trip
+    private func deleteTrip(_ trip: Trip) {
+        if let idx = store.trips.firstIndex(where: { $0.id == trip.id }) {
+            store.delete(at: IndexSet(integer: idx))
+        }
     }
 
     // MARK: - Polling live stats
@@ -406,22 +424,34 @@ struct TripListView: View {
                 Section("End Odometer (Optional)") {
                     TextField("End odometer", text: $endOdoText)
                         .keyboardType(.decimalPad)
+                        .focused($endOdoFocused)
                     Text("You can leave this blank; distance will be computed from your recorded route.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("Finalize Trip")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { showingEndSheet = false }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { finalizeTrip() }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+                        .disabled(false) // Always allowed; blank is valid
+                }
+                // Keyboard toolbar to dismiss number pad
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") {
+                        endOdoFocused = false
+                    }
+                }
+            }
+            .task {
+                // Auto-focus the field when the sheet appears
+                await MainActor.run {
+                    endOdoFocused = true
                 }
             }
         }
@@ -456,7 +486,7 @@ struct TripListView: View {
             .filter { range.contains($0.date) }
             .sorted { $0.date < $1.date }
 
-        let csv = CSVExporter.makeCSV(trips: weekTrips)
+        let csv = CSVExporter.makeCSV(trips: [Trip](weekTrips))
         let (year, week) = isoYearWeek(for: today)
         share(csvString: csv, suggestedName: "trips_\(year)-W\(String(format: "%02d", week)).csv")
     }
@@ -612,4 +642,3 @@ private struct ShareSheet: UIViewControllerRepresentable {
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) { }
 }
-
