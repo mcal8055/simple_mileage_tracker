@@ -204,12 +204,10 @@
 				8A511C722EA0162C0026FA6A /* Sources */,
 				8A511C732EA0162C0026FA6A /* Frameworks */,
 				8A511C742EA0162C0026FA6A /* Resources */,
-				8A511CF32EA179140026FA6A /* Embed Watch Content */,
 			);
 			buildRules = (
 			);
 			dependencies = (
-				8A511CEE2EA179140026FA6A /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				8A511C782EA0162C0026FA6A /* Mileage Tracker */,

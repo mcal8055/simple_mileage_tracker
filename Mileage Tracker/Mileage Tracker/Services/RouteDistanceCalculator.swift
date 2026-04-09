@@ -25,20 +25,10 @@ enum RouteDistanceCalculator {
             return cached
         }
 
-        let source: MKMapItem
-        let dest: MKMapItem
-
-        if #available(iOS 26.0, *) {
-            let sourceLocation = CLLocation(latitude: start.latitude, longitude: start.longitude)
-            let destLocation = CLLocation(latitude: end.latitude, longitude: end.longitude)
-            source = MKMapItem(location: sourceLocation, address: nil)
-            dest = MKMapItem(location: destLocation, address: nil)
-        } else {
-            let sourcePlacemark = MKPlacemark(coordinate: start)
-            let destPlacemark = MKPlacemark(coordinate: end)
-            source = MKMapItem(placemark: sourcePlacemark)
-            dest = MKMapItem(placemark: destPlacemark)
-        }
+        let sourcePlacemark = MKPlacemark(coordinate: start)
+        let destPlacemark = MKPlacemark(coordinate: end)
+        let source = MKMapItem(placemark: sourcePlacemark)
+        let dest = MKMapItem(placemark: destPlacemark)
 
         let request = MKDirections.Request()
         request.source = source
@@ -115,8 +105,5 @@ private actor Cache {
 
     func set(_ value: Double?, for key: CacheKey) {
         store[key] = value
-    }
-    static func metersToMiles(_ meters: Double) -> Double {
-        meters / 1609.344
     }
 }

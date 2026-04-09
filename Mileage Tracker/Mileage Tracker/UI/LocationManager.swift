@@ -70,6 +70,12 @@ final class LocationManager: NSObject, ObservableObject {
             self?.handleTimeout()
         }
 
+        // If a previous capture is still pending, cancel it before starting a new one.
+        if let existing = pendingFixContinuation {
+            existing.resume(returning: nil)
+            pendingFixContinuation = nil
+        }
+
         return await withCheckedContinuation { continuation in
             self.pendingFixContinuation = continuation
         }

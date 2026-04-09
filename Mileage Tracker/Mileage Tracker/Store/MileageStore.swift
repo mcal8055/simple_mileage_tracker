@@ -15,18 +15,39 @@ import UIKit
 @MainActor
 final class MileageStore: ObservableObject {
     @Published var trips: [Trip] = [] {
-        didSet { Task { await saveTrips() } }
+        didSet { scheduleSave(for: \.trips) }
     }
 
     // In-progress trip (not yet finalized)
     @Published var currentTripInProgress: Trip? {
-        didSet { Task { await saveInProgress() } }
+        didSet { scheduleSave(for: \.currentTripInProgress) }
     }
 
     // Persisted list of client names for the Client dropdown
     @Published var clients: [String] = [] {
-        didSet { Task { await saveClients() } }
+        didSet { scheduleSave(for: \.clients) }
     }
+
+    // Coalescing save tasks — cancels prior pending save before scheduling a new one.
+    private var pendingSaveTasks: [PartialKeyPath<MileageStore>: Task<Void, Never>] = [:]
+
+    private func scheduleSave(for keyPath: PartialKeyPath<MileageStore>) {
+        pendingSaveTasks[keyPath]?.cancel()
+        pendingSaveTasks[keyPath] = Task {
+            // Yield once so rapid back-to-back mutations coalesce into a single save.
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            switch keyPath {
+            case \.trips: await saveTrips()
+            case \.currentTripInProgress: await saveInProgress()
+            case \.clients: await saveClients()
+            default: break
+            }
+        }
+    }
+
+    // User-visible error surfaced from persistence failures.
+    @Published var loadError: String?
 
     private let tripsFileName = "trips.json"
     private let inProgressFileName = "trip_in_progress.json"
@@ -47,7 +68,10 @@ final class MileageStore: ObservableObject {
             self.baseDirectoryURL = baseDirectoryURL
         } else {
             // Default to Documents for app usage.
-            self.baseDirectoryURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            guard let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+                fatalError("MileageStore: Documents directory unavailable")
+            }
+            self.baseDirectoryURL = documentsURL
         }
 
         Task {
@@ -248,6 +272,7 @@ final class MileageStore: ObservableObject {
             self.trips = loaded.sorted { $0.date < $1.date }
         } catch {
             print("Failed to load trips: \(error)")
+            loadError = "Failed to load trips: \(error.localizedDescription)"
         }
     }
 
@@ -293,7 +318,7 @@ final class MileageStore: ObservableObject {
         do {
             guard FileManager.default.fileExists(atPath: clientsURL.path) else { return }
             let data = try Data(contentsOf: clientsURL)
-            let loaded = try JSONDecoder().decode([String].self, from: data)
+            let loaded = try decoder().decode([String].self, from: data)
             self.clients = loaded
         } catch {
             print("Failed to load clients: \(error)")
@@ -303,7 +328,7 @@ final class MileageStore: ObservableObject {
     func saveClients() async {
         do {
             try ensureBaseDirectoryExists()
-            let data = try JSONEncoder().encode(clients)
+            let data = try encoder().encode(clients)
             try data.write(to: clientsURL, options: [.atomic])
         } catch {
             print("Failed to save clients: \(error)")

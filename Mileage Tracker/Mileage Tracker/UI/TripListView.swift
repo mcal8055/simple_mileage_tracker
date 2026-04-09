@@ -7,6 +7,7 @@
 
 import SwiftUI
 import CoreLocation
+import Combine
 
 struct TripListView: View {
     @EnvironmentObject private var store: MileageStore
@@ -25,8 +26,9 @@ struct TripListView: View {
     // Live in-progress stats
     @State private var liveMiles: Double = 0
     @State private var livePoints: Int = 0
-    @State private var isPollingStats: Bool = false
-    @State private var statsTimer: Timer?
+
+    // 1-second timer for live stats polling (publisher is always running; view only reads when trip is active)
+    private let statsTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
     // Collapsible month sections: collapsed by default (empty set means none expanded)
     @State private var expandedMonths: Set<YearMonth> = []
@@ -77,6 +79,7 @@ struct TripListView: View {
                                 }
                                 .buttonStyle(.bordered)
                                 .controlSize(.small)
+                                .accessibilityLabel("End Trip")
 
                                 Button(role: .destructive) {
                                     store.cancelCurrentTrip()
@@ -86,14 +89,14 @@ struct TripListView: View {
                                 }
                                 .buttonStyle(.bordered)
                                 .controlSize(.small)
+                                .accessibilityLabel("Cancel Trip")
                             }
 
                             // Status for location manager
                             statusView
                         }
                         .padding(.vertical, 4)
-                        .onAppear { startPollingStats() }
-                        .onDisappear { stopPollingStats() }
+                        .onReceive(statsTimer) { _ in pollLiveStats() }
                     }
                 } else {
                     // Start trip control when no trip is in progress
@@ -110,7 +113,6 @@ struct TripListView: View {
                                         // Reset live stats when starting
                                         liveMiles = 0
                                         livePoints = 0
-                                        startPollingStats()
                                     }
                                 } label: {
                                     Label("Start Trip", systemImage: "play.circle.fill")
@@ -118,12 +120,12 @@ struct TripListView: View {
                                 }
                                 .buttonStyle(.bordered)
                                 .controlSize(.small)
+                                .accessibilityLabel("Start Trip")
                             }
 
                             statusView
                         }
                         .padding(.vertical, 4)
-                        .onAppear { stopPollingStats() } // no in-progress trip
                     }
                 }
 
@@ -243,13 +245,13 @@ struct TripListView: View {
                     .presentationDragIndicator(.visible)
                     .scrollDismissesKeyboard(.interactively)
             }
-            .onChange(of: store.currentTripInProgress != nil) { _, active in
-                // Start/stop polling based on trip state
-                if active {
-                    startPollingStats()
-                } else {
-                    stopPollingStats()
-                }
+            .alert("Data Error", isPresented: Binding(
+                get: { store.loadError != nil },
+                set: { if !$0 { store.loadError = nil } }
+            )) {
+                Button("OK") { store.loadError = nil }
+            } message: {
+                Text(store.loadError ?? "")
             }
         }
     }
@@ -334,52 +336,10 @@ struct TripListView: View {
 
     // MARK: - Polling live stats
 
-    @MainActor
-    private func startPollingStats() {
-        guard !isPollingStats else { return }
-        isPollingStats = true
-
-        // Ensure previous timer is cleared
-        statsTimer?.invalidate()
-        statsTimer = nil
-
-        // Use selector-based timer with a proxy that executes a closure on fire.
-        let proxy = TimerProxy { [weak store] in
-            // If trip ended, stop polling
-            if store?.currentTripInProgress == nil {
-                stopPollingStats()
-                return
-            }
-            liveMiles = store?.liveRecordedMiles() ?? 0
-            livePoints = store?.livePointsCount() ?? 0
-        }
-
-        let timer = Timer.scheduledTimer(timeInterval: 1.0, target: proxy, selector: #selector(TimerProxy.fire), userInfo: nil, repeats: true)
-        // Retain the proxy via the timer; no additional strong refs needed.
-        RunLoop.main.add(timer, forMode: .common)
-        statsTimer = timer
-    }
-
-    @MainActor
-    private func stopPollingStats() {
-        statsTimer?.invalidate()
-        statsTimer = nil
-        isPollingStats = false
-    }
-
-    // Helper proxy object so the Timer calls back into a closure on main actor.
-    private final class TimerProxy: NSObject {
-        private let onFire: @MainActor () -> Void
-
-        init(onFire: @escaping @MainActor () -> Void) {
-            self.onFire = onFire
-        }
-
-        @objc func fire() {
-            Task { @MainActor in
-                onFire()
-            }
-        }
+    private func pollLiveStats() {
+        guard store.currentTripInProgress != nil else { return }
+        liveMiles = store.liveRecordedMiles()
+        livePoints = store.livePointsCount()
     }
 
     // MARK: - Location status UI
@@ -448,11 +408,8 @@ struct TripListView: View {
                     }
                 }
             }
-            .task {
-                // Auto-focus the field when the sheet appears
-                await MainActor.run {
-                    endOdoFocused = true
-                }
+            .onAppear {
+                endOdoFocused = true
             }
         }
     }
@@ -602,19 +559,27 @@ struct TripListView: View {
         return weekInterval.start..<weekInterval.end
     }
 
-    // MARK: - Formatting
+    // MARK: - Formatting (cached formatters)
 
-    private func dateString(_ date: Date) -> String {
+    private static let mediumDateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateStyle = .medium
-        return f.string(from: date)
-    }
+        return f
+    }()
 
-    private func dateTimeString(_ date: Date) -> String {
+    private static let mediumDateTimeFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateStyle = .medium
         f.timeStyle = .short
-        return f.string(from: date)
+        return f
+    }()
+
+    private func dateString(_ date: Date) -> String {
+        Self.mediumDateFormatter.string(from: date)
+    }
+
+    private func dateTimeString(_ date: Date) -> String {
+        Self.mediumDateTimeFormatter.string(from: date)
     }
 
     private func milesString(_ miles: Double) -> String {
