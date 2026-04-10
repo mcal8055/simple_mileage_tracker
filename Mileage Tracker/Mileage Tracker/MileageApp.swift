@@ -10,11 +10,16 @@ import SwiftUI
 @main
 struct MileageApp: App {
     @StateObject private var store = MileageStore()
+    @AppStorage("hasSeenOnboarding") private var hasSeenOnboarding = false
 
     var body: some Scene {
         WindowGroup {
-            TripListView()
-                .environmentObject(store)
+            if hasSeenOnboarding {
+                TripListView()
+                    .environmentObject(store)
+            } else {
+                OnboardingView()
+            }
         }
     }
 }

@@ -21,6 +21,7 @@ final class EditTripViewModel: ObservableObject {
     @Published var purpose: String = ""   // Will represent "Client"
     @Published var category: String = ""  // Will represent "Service"
     @Published var notes: String = ""
+    @Published var destination: String = ""
     @Published var createdAt: Date = Date()
 
     // Coordinates
@@ -50,6 +51,7 @@ final class EditTripViewModel: ObservableObject {
             purpose = t.purpose
             category = t.category
             notes = t.notes
+            destination = t.destination ?? ""
             createdAt = t.createdAt
             startLat = t.startLat
             startLon = t.startLon
@@ -175,6 +177,7 @@ final class EditTripViewModel: ObservableObject {
             purpose: purpose.trimmingCharacters(in: .whitespacesAndNewlines),   // Client
             category: category.trimmingCharacters(in: .whitespacesAndNewlines), // Service
             notes: notes.trimmingCharacters(in: .whitespacesAndNewlines),
+            destination: destination.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : destination.trimmingCharacters(in: .whitespacesAndNewlines),
             createdAt: createdAt,
             startLat: startLat,
             startLon: startLon,
@@ -242,7 +245,7 @@ struct EditTripView: View {
                         formatCoord: vm.formatCoord
                     )
 
-                    DetailsSection(service: $vm.category, client: $vm.purpose, notes: $vm.notes)
+                    DetailsSection(service: $vm.category, client: $vm.purpose, destination: $vm.destination, notes: $vm.notes)
                         .environmentObject(store)
 
                     Color.clear.frame(height: 40)
@@ -319,6 +322,11 @@ private struct TripSection: View {
                         Text(durationString(from: date, to: end))
                             .monospacedDigit()
                             .foregroundStyle(.primary)
+                    }
+                    if date > end {
+                        Text("Start date is after end date")
+                            .font(.footnote)
+                            .foregroundStyle(.red)
                     }
                 } else {
                     HStack {
@@ -458,17 +466,13 @@ private struct DetailsSection: View {
     // category = Service, purpose = Client
     @Binding var service: String
     @Binding var client: String
+    @Binding var destination: String
     @Binding var notes: String
 
     @State private var showingAddClient = false
     @State private var newClientName: String = ""
-
-    private let serviceOptions: [String] = [
-        "House Sitting",
-        "Drop-ins",
-        "Dog Walking",
-        "Meet & Greet"
-    ]
+    @State private var showingAddService = false
+    @State private var newServiceName: String = ""
 
     var body: some View {
         Group {
@@ -481,18 +485,44 @@ private struct DetailsSection: View {
                     Text("Service")
                     Spacer()
                     Picker("Service", selection: $service) {
-                        ForEach(serviceOptions, id: \.self) { option in
+                        Text("None").tag("")
+                        ForEach(store.services, id: \.self) { option in
                             Text(option).tag(option)
                         }
                     }
                     .pickerStyle(.menu)
                 }
 
-                // Client dropdown (mapped to Trip.purpose) with add-new flow
+                HStack {
+                    Button {
+                        newServiceName = ""
+                        showingAddService = true
+                    } label: {
+                        Label("Add Service", systemImage: "plus.circle")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    Spacer()
+
+                    if !service.isEmpty, store.services.contains(where: { $0.caseInsensitiveCompare(service) == .orderedSame }) {
+                        Button(role: .destructive) {
+                            store.removeService(named: service)
+                            service = ""
+                        } label: {
+                            Label("Remove Service", systemImage: "trash")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+
+                // Client dropdown (mapped to Trip.purpose)
                 HStack(alignment: .center) {
                     Text("Client")
                     Spacer()
                     Picker("Client", selection: $client) {
+                        Text("None").tag("")
                         ForEach(store.clients, id: \.self) { name in
                             Text(name).tag(name)
                         }
@@ -505,22 +535,17 @@ private struct DetailsSection: View {
                         newClientName = ""
                         showingAddClient = true
                     } label: {
-                        Label("Add New Client", systemImage: "plus.circle")
+                        Label("Add Client", systemImage: "plus.circle")
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
 
                     Spacer()
 
-                    // Quick remove if selected exists
                     if !client.isEmpty, store.clients.contains(where: { $0.caseInsensitiveCompare(client) == .orderedSame }) {
                         Button(role: .destructive) {
                             store.removeClient(named: client)
-                            if let first = store.clients.first {
-                                client = first
-                            } else {
-                                client = ""
-                            }
+                            client = ""
                         } label: {
                             Label("Remove Client", systemImage: "trash")
                         }
@@ -528,6 +553,10 @@ private struct DetailsSection: View {
                         .controlSize(.small)
                     }
                 }
+
+                TextField("Destination", text: $destination)
+                    .textFieldStyle(.roundedBorder)
+                    .textInputAutocapitalization(.words)
 
                 TextField("Notes", text: $notes, axis: .vertical)
                     .lineLimit(1...4)
@@ -564,9 +593,36 @@ private struct DetailsSection: View {
             }
             .presentationDetents([.height(220)])
         }
+        .sheet(isPresented: $showingAddService) {
+            NavigationStack {
+                Form {
+                    Section("New Service") {
+                        TextField("Service name", text: $newServiceName)
+                            .textInputAutocapitalization(.words)
+                            .autocorrectionDisabled(false)
+                    }
+                }
+                .navigationTitle("Add Service")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { showingAddService = false }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save") {
+                            let name = newServiceName.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !name.isEmpty else { return }
+                            store.addService(name)
+                            service = name
+                            showingAddService = false
+                        }
+                        .disabled(newServiceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+            }
+            .presentationDetents([.height(220)])
+        }
         .onAppear {
-            // If service is empty, don't auto-select; user can choose.
-            // If client is empty but we have existing clients, preselect first for convenience.
+            // Don't auto-select; user can choose "None" or pick from list.
             if client.isEmpty, let first = store.clients.first {
                 client = first
             }

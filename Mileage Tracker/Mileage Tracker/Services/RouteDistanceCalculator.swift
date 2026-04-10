@@ -25,10 +25,16 @@ enum RouteDistanceCalculator {
             return cached
         }
 
-        let sourcePlacemark = MKPlacemark(coordinate: start)
-        let destPlacemark = MKPlacemark(coordinate: end)
-        let source = MKMapItem(placemark: sourcePlacemark)
-        let dest = MKMapItem(placemark: destPlacemark)
+        let source: MKMapItem
+        let dest: MKMapItem
+
+        if #available(iOS 26.0, *) {
+            source = MKMapItem(location: CLLocation(latitude: start.latitude, longitude: start.longitude), address: nil)
+            dest = MKMapItem(location: CLLocation(latitude: end.latitude, longitude: end.longitude), address: nil)
+        } else {
+            source = MKMapItem(placemark: MKPlacemark(coordinate: start))
+            dest = MKMapItem(placemark: MKPlacemark(coordinate: end))
+        }
 
         let request = MKDirections.Request()
         request.source = source

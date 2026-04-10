@@ -50,6 +50,8 @@ final class LocationRecordingController: NSObject {
 
     // MARK: - Live stats (read-only)
 
+    var isRecording: Bool { activeTripID != nil }
+
     var currentRecordedMiles: Double {
         metersAccumulated / 1609.344
     }

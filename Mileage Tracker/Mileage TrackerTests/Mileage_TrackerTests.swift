@@ -106,11 +106,11 @@ struct CSVExporterTests {
         let csv = CSVExporter.makeCSV(trips: [t2, t3, t1])
         let lines = csv.split(separator: "\n").dropFirst(2) // skip comment + header
 
-        // With id added as first column, purpose is now the 11th field (0-based index 10)
+        // With destination added before purpose, purpose is now the 12th field (0-based index 11)
         let purposes = lines.compactMap { line -> String? in
             let parts = line.split(separator: ",", omittingEmptySubsequences: false)
-            guard parts.count >= 11 else { return nil }
-            return String(parts[10]).replacingOccurrences(of: "\"", with: "")
+            guard parts.count >= 12 else { return nil }
+            return String(parts[11]).replacingOccurrences(of: "\"", with: "")
         }
         #expect(purposes == ["A", "C", "B"])
     }

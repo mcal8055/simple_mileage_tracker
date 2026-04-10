@@ -103,6 +103,7 @@ final class LocationManager: NSObject, ObservableObject {
     private func handleTimeout() {
         // Called from a background Task; we’re @MainActor, so this runs on main.
         guard pendingFixContinuation != nil else { return }
+        status = .failed("Location timed out")
         finish(with: nil)
     }
 }

@@ -21,7 +21,11 @@ struct TripListView: View {
     // End trip sheet
     @State private var showingEndSheet = false
     @State private var endOdoText: String = ""
+    @State private var destinationText: String = ""
     @FocusState private var endOdoFocused: Bool
+
+    // Export error feedback
+    @State private var exportError: String?
 
     // Live in-progress stats
     @State private var liveMiles: Double = 0
@@ -68,8 +72,12 @@ struct TripListView: View {
                                     Task {
                                         // Capture end location first
                                         locationManager.requestWhenInUseAuthorization()
-                                        _ = await locationManager.captureOneShotLocation()
-                                        // Present end odometer prompt (optional)
+                                        let loc = await locationManager.captureOneShotLocation()
+                                        // Reverse geocode destination address
+                                        destinationText = ""
+                                        if let loc {
+                                            destinationText = await ReverseGeocoder.reverseGeocode(loc) ?? ""
+                                        }
                                         endOdoText = ""
                                         showingEndSheet = true
                                     }
@@ -127,6 +135,15 @@ struct TripListView: View {
                         }
                         .padding(.vertical, 4)
                     }
+                }
+
+                // Empty state when no trips exist
+                if store.trips.isEmpty && store.currentTripInProgress == nil {
+                    ContentUnavailableView(
+                        "No Trips Yet",
+                        systemImage: "car.side",
+                        description: Text("Tap Start Trip to begin tracking your mileage.")
+                    )
                 }
 
                 // Grouped, collapsible trips by month with most recent first
@@ -252,6 +269,14 @@ struct TripListView: View {
                 Button("OK") { store.loadError = nil }
             } message: {
                 Text(store.loadError ?? "")
+            }
+            .alert("Export Failed", isPresented: Binding(
+                get: { exportError != nil },
+                set: { if !$0 { exportError = nil } }
+            )) {
+                Button("OK") { exportError = nil }
+            } message: {
+                Text(exportError ?? "")
             }
         }
     }
@@ -381,6 +406,15 @@ struct TripListView: View {
     private var endTripSheet: some View {
         NavigationStack {
             Form {
+                Section("Destination") {
+                    TextField("e.g. 123 Main St or Client's office", text: $destinationText)
+                        .textInputAutocapitalization(.words)
+                    if !destinationText.isEmpty {
+                        Text("Auto-filled from GPS. Edit if needed.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Section("End Odometer (Optional)") {
                     TextField("End odometer", text: $endOdoText)
                         .keyboardType(.decimalPad)
@@ -416,6 +450,7 @@ struct TripListView: View {
 
     private func finalizeTrip() {
         let endOdo = Double(endOdoText) ?? 0
+        let destination = destinationText.trimmingCharacters(in: .whitespacesAndNewlines)
         // Capture end coordinates if we have a recent fix
         var endLat: Double?
         var endLon: Double?
@@ -423,9 +458,10 @@ struct TripListView: View {
             endLat = loc.coordinate.latitude
             endLon = loc.coordinate.longitude
         }
-        store.finalizeCurrentTrip(endOdo: endOdo, endLat: endLat, endLon: endLon)
+        store.finalizeCurrentTrip(endOdo: endOdo, endLat: endLat, endLon: endLon, destination: destination.isEmpty ? nil : destination)
         showingEndSheet = false
     }
+
 
     // MARK: - Export All
 
@@ -472,7 +508,7 @@ struct TripListView: View {
             let combinedURL = try writeCombinedJSONL(from: urls, name: "points_all_\(timestamp()).jsonl")
             shareItem = ShareItem(url: combinedURL)
         } catch {
-            print("Failed to build combined JSONL: \(error)")
+            exportError = "Failed to export breadcrumbs: \(error.localizedDescription)"
         }
     }
 
@@ -519,7 +555,7 @@ struct TripListView: View {
             let url = try writeTempCSV(csvString, name: suggestedName)
             shareItem = ShareItem(url: url)
         } catch {
-            print("Failed to write CSV: \(error)")
+            exportError = "Failed to export: \(error.localizedDescription)"
         }
     }
 

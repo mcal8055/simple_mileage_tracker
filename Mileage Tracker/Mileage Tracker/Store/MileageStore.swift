@@ -28,6 +28,11 @@ final class MileageStore: ObservableObject {
         didSet { scheduleSave(for: \.clients) }
     }
 
+    // Persisted list of service category names (user-configurable)
+    @Published var services: [String] = [] {
+        didSet { scheduleSave(for: \.services) }
+    }
+
     // Coalescing save tasks — cancels prior pending save before scheduling a new one.
     private var pendingSaveTasks: [PartialKeyPath<MileageStore>: Task<Void, Never>] = [:]
 
@@ -41,6 +46,7 @@ final class MileageStore: ObservableObject {
             case \.trips: await saveTrips()
             case \.currentTripInProgress: await saveInProgress()
             case \.clients: await saveClients()
+            case \.services: await saveServices()
             default: break
             }
         }
@@ -52,6 +58,7 @@ final class MileageStore: ObservableObject {
     private let tripsFileName = "trips.json"
     private let inProgressFileName = "trip_in_progress.json"
     private let clientsFileName = "clients.json"
+    private let servicesFileName = "services.json"
     private let pointsDirectoryName = "points"
 
     // Injected base directory for persistence (defaults to app Documents).
@@ -78,13 +85,86 @@ final class MileageStore: ObservableObject {
             await loadTrips()
             await loadInProgress()
             await loadClients()
+            await loadServices()
+            resumeRecordingIfNeeded()
+            await backfillMissingDestinations()
+        }
+    }
+
+    // MARK: - Crash recovery
+
+    /// If the app was killed while a trip was in progress, resume recording on relaunch.
+    private func resumeRecordingIfNeeded() {
+        guard let trip = currentTripInProgress, !recorder.isRecording else { return }
+        do {
+            try ensureBaseDirectoryExists()
+            try ensurePointsDirectoryExists()
+            try recorder.start(for: trip.id, baseDirectory: baseDirectoryURL)
+            setIdleTimerDisabled(true)
+        } catch {
+            print("Failed to resume recording: \(error)")
+        }
+    }
+
+    // MARK: - Destination backfill
+
+    /// One-time migration: reverse geocode destinations for trips that have end coordinates but no destination.
+    private func backfillMissingDestinations() async {
+        // Collect indices that need backfill
+        var toBackfill: [(index: Int, location: CLLocation)] = []
+        for i in trips.indices {
+            if trips[i].destination == nil,
+               let lat = trips[i].endLat, let lon = trips[i].endLon {
+                toBackfill.append((i, CLLocation(latitude: lat, longitude: lon)))
+            }
+        }
+
+        guard !toBackfill.isEmpty else {
+            print("Backfill: no trips need destination (all have one or lack end coordinates)")
+            return
+        }
+        print("Backfill: \(toBackfill.count) trip(s) need destination geocoding")
+
+        var updatedTrips = trips
+        var count = 0
+        var consecutiveFailures = 0
+        for (index, location) in toBackfill {
+            if let address = await ReverseGeocoder.reverseGeocode(location) {
+                updatedTrips[index].destination = address
+                count += 1
+                consecutiveFailures = 0
+                print("Backfill: trip \(updatedTrips[index].id) → \(address)")
+            } else {
+                consecutiveFailures += 1
+                print("Backfill: geocoding returned nil for trip \(updatedTrips[index].id)")
+                // If we hit rate limiting (multiple consecutive failures), wait longer and retry once.
+                if consecutiveFailures >= 2 {
+                    print("Backfill: rate limited, waiting 30s before retrying...")
+                    try? await Task.sleep(nanoseconds: 30_000_000_000)
+                    // Retry the failed one
+                    if let address = await ReverseGeocoder.reverseGeocode(location) {
+                        updatedTrips[index].destination = address
+                        count += 1
+                        consecutiveFailures = 0
+                        print("Backfill: retry succeeded for trip \(updatedTrips[index].id) → \(address)")
+                    }
+                }
+            }
+            // Apple rate-limits to 50 requests per 60s; ~1.2s spacing stays under the limit.
+            try? await Task.sleep(nanoseconds: 1_300_000_000)
+        }
+
+        if count > 0 {
+            // Replace the whole array once to trigger a single save.
+            trips = updatedTrips
+            print("Backfill: updated \(count) trip(s) with destinations")
         }
     }
 
     // MARK: - Start / End flow
 
     func startTrip(at date: Date = Date(), startLat: Double?, startLon: Double?) {
-        var t = Trip(
+        let t = Trip(
             date: date,
             startOdo: 0, // unknown at start; user can fill later if desired
             endOdo: 0,
@@ -114,11 +194,12 @@ final class MileageStore: ObservableObject {
         }
     }
 
-    func finalizeCurrentTrip(endOdo: Double, endLat: Double?, endLon: Double?) {
+    func finalizeCurrentTrip(endOdo: Double, endLat: Double?, endLon: Double?, destination: String? = nil) {
         guard var t = currentTripInProgress else { return }
         t.endOdo = endOdo
         t.endLat = endLat
         t.endLon = endLon
+        t.destination = destination
         t.endDate = Date() // capture end timestamp
 
         // Stop recorder and attach summary
@@ -191,6 +272,28 @@ final class MileageStore: ObservableObject {
         clients.removeAll { $0.caseInsensitiveCompare(name) == .orderedSame }
     }
 
+    // MARK: - Services list management
+
+    private static let defaultServices = [
+        "House Sitting",
+        "Drop-ins",
+        "Dog Walking",
+        "Meet & Greet"
+    ]
+
+    func addService(_ name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let exists = services.contains { $0.caseInsensitiveCompare(trimmed) == .orderedSame }
+        guard !exists else { return }
+        services.append(trimmed)
+        services.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    func removeService(named name: String) {
+        services.removeAll { $0.caseInsensitiveCompare(name) == .orderedSame }
+    }
+
     // MARK: - CRUD (legacy edit path still supported)
 
     func add(_ trip: Trip) {
@@ -238,6 +341,10 @@ final class MileageStore: ObservableObject {
 
     private var clientsURL: URL {
         baseDirectoryURL.appendingPathComponent(clientsFileName)
+    }
+
+    private var servicesURL: URL {
+        baseDirectoryURL.appendingPathComponent(servicesFileName)
     }
 
     // Build a full URL to a points file name under the points directory.
@@ -332,6 +439,32 @@ final class MileageStore: ObservableObject {
             try data.write(to: clientsURL, options: [.atomic])
         } catch {
             print("Failed to save clients: \(error)")
+        }
+    }
+
+    func loadServices() async {
+        do {
+            guard FileManager.default.fileExists(atPath: servicesURL.path) else {
+                // Seed with defaults on first launch
+                self.services = Self.defaultServices
+                return
+            }
+            let data = try Data(contentsOf: servicesURL)
+            let loaded = try decoder().decode([String].self, from: data)
+            self.services = loaded
+        } catch {
+            print("Failed to load services: \(error)")
+            self.services = Self.defaultServices
+        }
+    }
+
+    func saveServices() async {
+        do {
+            try ensureBaseDirectoryExists()
+            let data = try encoder().encode(services)
+            try data.write(to: servicesURL, options: [.atomic])
+        } catch {
+            print("Failed to save services: \(error)")
         }
     }
 

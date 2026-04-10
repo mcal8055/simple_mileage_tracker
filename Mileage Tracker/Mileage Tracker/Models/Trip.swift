@@ -14,9 +14,10 @@ struct Trip: Identifiable, Codable, Hashable {
     var endDate: Date? = nil
     var startOdo: Double
     var endOdo: Double
-    var purpose: String
-    var category: String
+    var purpose: String    // UI label: "Client" — the client/customer name
+    var category: String   // UI label: "Service" — the type of service performed
     var notes: String
+    var destination: String?       // Reverse-geocoded or user-entered trip destination (IRS requirement)
     var createdAt: Date = Date()
 
     // Optional location capture (explicit, user-triggered)
