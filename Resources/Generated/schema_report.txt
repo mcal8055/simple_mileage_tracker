@@ -1,0 +1,9 @@
+EXPECTED:
+trip_id, date, start_time, end_time, duration_min, distance_miles, start_lat, start_lng, end_lat, end_lng, label, notes, is_business, start_address, end_address
+
+FOUND:
+trip_id, date, start_time, end_time, duration_min, distance_miles, start_lat, start_lng, end_lat, end_lng, label, notes, is_business, start_address, end_address
+
+MISSING: None
+EXTRA:   None
+ORDER_MATCH: True
